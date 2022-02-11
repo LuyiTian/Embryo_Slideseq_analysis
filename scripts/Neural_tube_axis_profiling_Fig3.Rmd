@@ -1,0 +1,472 @@
+---
+title: "neural tube axis profiling"
+output: html_notebook
+---
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(scuttle)
+library(scran)
+library(ggpubr)
+library(RColorBrewer)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+fig_dir = file.path("figs","neural_tube1")
+dir.create(fig_dir)
+
+cluster_colors <- c('black', '#277424', '#CBBBA0', '#92C464', '#954B97', '#BD6FAB', '#581D6F', '#3AAA35', '#662483', '#9E937E', '#30892B', '#00A19A', '#64358C', '#8763A1', '#66296B', '#4A712E',
+                    '#FFD100', '#B6A8D3', '#F9B233', '#1A5B1A', '#783F91', '#8C1D82', '#1C4024', '#107F71', '#7C4978', '#FFED00', '#7A2182', '#009767', '#624758', '#DF76AC', '#B670AC', '#6B3064',
+                    '#6C6556', '#5567AE', '#477EC0', '#642F2C', '#318F2D', '#5B57A2', '#536C87', '#E94E1B', '#2FAC66', '#E20146')
+cluster_order <- c('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30',
+                   '31', '32', '33', '34', '35', '36', '37', '38', '39', '40', '41')
+names(cluster_colors) = cluster_order
+
+```
+
+
+## Load data and select neural tube regions from the puck
+
+
+```{r}
+srt_list = readRDS("data/srt_list_E9.5.Rds")
+selected_nt = read.csv("/stornext/Genomics/data/CLL_venetoclax/data_analysis/slideseq/slideseq/mouse_embryo/data/Puck_201112_03_Neuraltubecropped/201112_03_cropped_locations.csv",row.names = 1)
+#selected_nt = selected_nt[selected_nt$ycoord>2200 & selected_nt$ycoord<4200,]
+
+ggplot(data=selected_nt,aes(x=xcoord,y=ycoord))+
+  geom_point()+
+  theme_classic()
+```
+
+
+
+
+
+```{r}
+srt = srt_list$`201112_03`
+DimPlot(srt)
+```
+
+
+```{r}
+plot_df = data.frame(x=srt$xcoord,y=srt$ycoord,cluster=srt$seurat_clusters)
+ggplot(data=plot_df,aes(x=x,y=y,col=cluster))+
+    geom_point(size=0.2,alpha=0.7)+
+    labs(col="",title="seurat_clusters res=.8")+
+    theme_classic()
+```
+
+
+
+```{r}
+srt$selected = "NO"
+srt$selected[srt$barcode %in% selected_nt$barcode] = "YES"
+
+plot_df = data.frame(x=srt$xcoord,y=srt$ycoord,cluster=srt$seurat_clusters)
+plot_df = plot_df[srt$selected=="YES",]
+ggplot(data=plot_df,aes(x=x,y=y,col=cluster))+
+    geom_point(size=0.2,alpha=0.7)+
+    labs(col="",title="seurat_clusters res=.8")+
+    theme_classic()+
+  facet_wrap(~cluster)
+```
+
+```{r}
+srt$selected[srt$seurat_clusters %in% c(0,1,3,10)] = "NO"
+plot_df = data.frame(x=srt$xcoord,y=srt$ycoord,cluster=srt$seurat_clusters)
+plot_df = plot_df[srt$selected=="YES",]
+ggplot(data=plot_df,aes(x=x,y=y,col=cluster))+
+    geom_point(size=0.2,alpha=0.7)+
+    labs(col="",title="seurat_clusters res=.8")+
+    theme_classic()
+```
+
+
+```{r}
+library(slingshot)
+library(mclust, quietly = TRUE)
+srt_sel = srt[,srt$selected=="YES"]
+coord_mat = srt_sel@meta.data[,c("xcoord","ycoord")]
+cl1 <- Mclust(coord_mat)$classification
+srt_sel$traj_clu = cl1
+library(RColorBrewer)
+plot(coord_mat, col = brewer.pal(9,"Set1")[cl1], pch=16, asp = 1)
+
+
+```
+
+
+```{r}
+plot_df = data.frame(x=srt_sel$xcoord,y=srt_sel$ycoord,cluster=factor(srt_sel$traj_clu))
+ggplot(data=plot_df,aes(x=x,y=y,col=cluster))+
+    geom_point(size=0.2,alpha=0.7)+
+    labs(col="",title="cluster based on positions")+
+    theme_classic()+
+  facet_wrap(~cluster)
+```
+
+```{r}
+srt_sel = srt_sel[,!(srt_sel$traj_clu==9)]
+```
+
+## Calculate anterior-posterior distance using principle curve
+
+
+```{r}
+coord_mtx = as.matrix(srt_sel@meta.data[,c("xcoord","ycoord")])
+sce_spa = SingleCellExperiment::SingleCellExperiment(assays=list(logcounts=srt_sel@assays$RNA@scale.data),reducedDims = SimpleList(spatial=coord_mtx))
+
+cl1 <- Mclust(coord_mtx,G=10:15)$classification
+sce_spa$GMM = cl1
+
+sce_spa <- slingshot(sce_spa, clusterLabels = 'GMM', reducedDim = 'spatial')
+srt_sel$AP_dist = sce_spa$slingPseudotime_1
+ggplot(data=srt_sel@meta.data,aes(x=xcoord,y=ycoord,col=sce_spa$slingPseudotime_1))+
+  geom_point()+
+  theme_classic()
+```
+```{r}
+ggplot(data=srt_sel@meta.data,aes(x=xcoord,y=ycoord))+
+  geom_point()+
+  theme_classic()
+```
+
+## Calculate dorsal-ventral distance use convex hull
+
+
+```{r}
+covx = chull(coord_mtx)
+
+plot(coord_mtx[,1],coord_mtx[,2])
+points(coord_mtx[chull(coord_mtx),1],coord_mtx[chull(coord_mtx),2],col=2,pch=19)
+```
+
+```{r}
+dist2d <- function(a,b,c) {
+ v1 <- b - c
+ v2 <- a - b
+ m <- cbind(v1,v2)
+ d <- abs(det(m))/sqrt(sum(v1*v1))
+} 
+```
+
+
+```{r}
+
+dist_all = as.matrix(dist(coord_mtx))
+dis = c()
+for(ix in 1:nrow(coord_mtx)){
+  if (ix %in% covx){
+    dis = c(dis,0)
+  }else{
+    tmp = dist_all[ix,covx]
+tmp = tmp[order(tmp)]
+r_dist = matrix(0,nrow=5,ncol=5)
+rownames(r_dist) = names(tmp)[1:5]
+colnames(r_dist) = names(tmp)[1:5]
+for (ib in 1:5){
+  for (ic in 1:5){
+    r_dist[ib,ic] = dist2d(coord_mtx[ix,], coord_mtx[names(tmp[ib]),],coord_mtx[names(tmp[ic]),] )
+  }
+}
+diag(r_dist) = 9999
+dis = c(dis, min(r_dist))
+  }
+}
+srt_sel$DV_dist = dis
+summary(dis)
+```
+
+```{r}
+write.csv(srt_sel@meta.data,file="data/cropped_201112_03_metadata.csv")
+```
+
+
+```{r}
+ggplot(data=srt_sel@meta.data,aes(x=xcoord,y=ycoord,col=sqrt(dis+1)))+
+  geom_point(size=0.3)+
+  scale_color_gradient2(  low = ("red"),
+  mid = "white",
+  high = ("blue"))+
+  theme_classic()
+```
+
+
+
+```{r,fig.width=9,fig.height=12}
+srt.marker = FindAllMarkers(srt,min.diff.pct=0.05,only.pos = T,verbose=F,max.cells.per.ident=1000)
+top10 <- srt.marker %>% group_by(cluster) %>% top_n(n = 20, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_logFC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+
+DotPlot(srt,features = unique(top10$gene),cluster.idents=F,cols="Spectral")+coord_flip()
+
+```
+
+
+```{r}
+plot_df = data.frame(x=srt$xcoord,y=srt$ycoord,cluster=srt$seurat_clusters)
+ggplot(data=plot_df,aes(x=x,y=y,col=cluster))+
+    geom_point(size=0.2,alpha=0.7)+
+    labs(col="",title="seurat_clusters res=.8")+
+    theme_classic()+
+  facet_wrap(~cluster)
+```
+
+
+```{r}
+firstup <- function(x) {
+  x <- tolower(x)
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+
+srt <- CellCycleScoring(srt, s.features =firstup( cc.genes$s.genes), g2m.features =firstup( cc.genes$g2m.genes), set.ident = FALSE)
+
+plot_df = data.frame(x=srt$xcoord,y=srt$ycoord,cluster=srt$Phase)
+plot_df = plot_df[colnames(srt_sel),]
+ggplot(data=plot_df,aes(x=x,y=y,col=cluster))+
+    geom_point(size=0.5,alpha=0.7)+
+    labs(col="",title="cell cycle")+
+    theme_classic()
+ggsave(file.path("figs","crop_figs","201112_03_cellcycle_selectedregion.png"),width = 16,height = 10)
+```
+
+
+```{r}
+srt_sel = FindVariableFeatures(srt_sel,nfeatures=1000)
+```
+
+
+```{r}
+sel_ge = "Hs3st3b1"
+ plot_df = data.frame(x=srt_sel$xcoord,y=srt_sel$ycoord,ge=log2(srt_sel@assays$RNA@counts[sel_ge,]+1))
+  plot_df$ge = scale(plot_df$ge)
+  plot_df$ge[plot_df$ge>3] = 3
+  pp = ggplot(data=plot_df,aes(x=x,y=y,col=ge))+
+      geom_point(size=0.2,alpha=0.7)+
+      labs(col="",title=sel_ge)+
+    scale_color_gradientn(colours=BlueAndRed()[20:50])+
+      theme_classic()
+pp
+```
+
+## select spatial variable genes using SPARK
+
+```{r}
+ library('SPARK')
+```
+
+```{r}
+
+
+
+sparkX <- sparkx(srt_sel@assays$RNA@counts,srt_sel@meta.data[,c("xcoord", "ycoord")],numCores=12,option="mixture")
+spark_pval = sparkX$res_mtest
+spark_pval = spark_pval[order(spark_pval$adjustedPval),]
+spark_pval$variable = rownames(spark_pval) %in% VariableFeatures(srt_sel)
+gene_var_both = VariableFeatures(srt_sel)[(VariableFeatures(srt_sel) %in% rownames(spark_pval)[spark_pval$adjustedPval<0.01] )]
+```
+
+## find spatial patterns of gene expression using dtwclust package
+
+```{r}
+library(dtwclust)
+```
+
+
+```{r}
+brk_wt = as.numeric(cut2(10000-srt_sel$DV_dist, g=15))
+
+expr_mat_pos = srt_sel@assays$RNA@scale.data[gene_var_both,]
+expr_mat_pos_m = scuttle::sumCountsAcrossCells(expr_mat_pos,as.factor(brk_wt),average=T)
+expr_mat = t(scale(t(assay(expr_mat_pos_m,"average"))))
+```
+
+```{r}
+expr_mat_all = srt_sel@assays$RNA@data
+expr_mat_all = expr_mat_all[rowSums(expr_mat_all)>2,]
+expr_mat_m = scuttle::sumCountsAcrossCells(expr_mat_all,as.factor(brk_wt),average=T)
+expr_mat_all = t(scale(t(assay(expr_mat_m,"average"))))
+```
+
+
+```{r}
+hc_sbd <- tsclust(expr_mat, type = "h", k = 8,
+preproc = NULL, seed = 899,distance = "sbd", centroid = shape_extraction,
+control = hierarchical_control(method = "average"),norm = "L2")
+
+
+hc_sbd <- tsclust(expr_mat,k=10, type = "f",distance = "L2",
+seed = 19910603, trace = F)
+
+
+```
+
+```{r}
+plot(hc_sbd, type = "centroids")
+```
+
+```{r}
+(hc_sbd@fcluster[c("Fgfbp3","Prdm8","Emid1","Sema5b","Zic1","Pax3","Olig2","Nkx6-1","Nkx2-9","Shh"),])
+```
+
+```{r}
+pheatmap::pheatmap(expr_mat,scale="row",cluster_cols = F)
+```
+
+
+```{r}
+names(hc_sbd@cluster) = rownames(expr_mat)
+hc_sbd@cluster[c("Fgfbp3","Prdm8","Irx5","Hs3st3b1","Emid1","Sema5b","Zic1","Pax3","Olig2","Nkx6-1","Nkx2-9","Shh")]
+```
+
+```{r}
+plot(expr_mat["Fgfbp3",])
+```
+
+
+```{r}
+
+ge_l = c()
+for (ix in 1:5) {
+  tmp_cor = cor(t(expr_mat_all),hc_sbd@centroids[[ix]])
+  tmp_cor = tmp_cor[order(tmp_cor,decreasing = T),]
+  ge_l = c(ge_l, names(head(tmp_cor,n=25)))
+}
+ge_l = unique(ge_l)
+```
+
+
+
+```{r}
+cnts = srt_sel@assays$RNA@counts
+cnts = cnts[rowSums(cnts)>30,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel$DV_dist)
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top = topTags(lrt,n=Inf)
+  top
+```
+
+
+```{r}
+cnts = srt_sel@assays$RNA@counts[,srt_sel$DV_dist<200]
+cnts = cnts[rowSums(cnts)>20,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel$DV_dist[srt_sel$DV_dist<200])
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top_dor = topTags(lrt,n=Inf)
+  top_dor$table = top_dor$table[order(top_dor$table$logFC,decreasing = T),]
+```
+
+```{r}
+cnts = srt_sel@assays$RNA@counts[,srt_sel$DV_dist>200]
+cnts = cnts[rowSums(cnts)>10,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel$DV_dist[srt_sel$DV_dist>200])
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top_ven = topTags(lrt,n=Inf)
+  top_ven$table = top_ven$table[order(top_ven$table$logFC),]
+```
+
+```{r}
+ge_l = c(ge_l,head(rownames(top_dor$table),n=70), head(rownames(top$table),n=70),tail(rownames(top$table),n=81))
+ge_l = unique(ge_l)
+```
+
+```{r}
+top_dor$table$idx = 1:nrow(top_dor$table)
+top$table$idx = 1:nrow(top$table)
+```
+
+
+
+
+```{r}
+library(gam)
+DV_expr_mat = srt_sel@assays$RNA@data[ge_l[!(grepl("^Hb",ge_l))],]
+return_fitted = function(ix) {gam::gam(y~s(x),data=data.frame(y=ix,x=srt_sel$DV_dist ) )$fitted.values}
+DV_expr_mat = t(apply(DV_expr_mat,1,return_fitted) )
+DV_expr_mat = t(scale(t(DV_expr_mat)))
+DV_expr_mat[DV_expr_mat>3] =3
+DV_expr_mat[DV_expr_mat<(-3)] = -3
+```
+
+
+
+```{r}
+ph = pheatmap::pheatmap(DV_expr_mat[,order(srt_sel$DV_dist,decreasing = T)],cluster_cols = F,show_colnames = F,clustering_distance_rows = "correlation",fontsize_row=6,width = 4,height = 15,file=file.path(fig_dir,"DV_continues_heatmaps.pdf"))
+
+
+ph = pheatmap::pheatmap(DV_expr_mat[,order(srt_sel$DV_dist,decreasing = T)],cluster_cols = F,show_colnames = F,clustering_distance_rows = "correlation",show_rownames = F,treeheight_row = 0,width = 4,height = 5,file=file.path(fig_dir,"DV_continues_heatmaps_s.pdf"))
+```
+
+```{r}
+
+for (sel_onege in c("Fgfbp3","Prdm8","Irx5","Hs3st3b1","Emid1","Sema5b","Zic1","Pax3","Olig2","Nkx6-1","Nkx2-9","Shh")) {
+  pheatmap::pheatmap(DV_expr_mat[sel_onege,order(srt_sel$DV_dist,decreasing = T),drop=F],scale = "row" ,cluster_rows = F,cluster_cols = F,show_rownames = T,show_colnames = F,border_color=NA ,color = BlueAndRed(),filename = file.path(fig_dir, paste0(sel_onege,"_expr.pdf")),width = 2.5,height = 0.5)
+}
+
+```
+
+
+
+```{r}
+brk_wt = as.numeric(cut2(10000-srt_sel$DV_dist, g=8))
+
+expr_mat_all8 = srt_sel@assays$RNA@data
+expr_mat_all8 = expr_mat_all8[rowSums(expr_mat_all8)>2,]
+expr_mat_m = scuttle::sumCountsAcrossCells(expr_mat_all8,as.factor(brk_wt),average=T)
+expr_mat_all8 = t(scale(t(assay(expr_mat_m,"average"))))
+
+
+pheatmap::pheatmap(expr_mat_all8[ge_l,],scale = "none" ,cluster_cols = F,show_colnames = F,border_color=NA ,color = BlueAndRed(),fontsize_row=7,filename=file.path(fig_dir,"201112_03_DV_combine_heatmap.pdf"),width = 4,height = 17)
+
+pheatmap::pheatmap(expr_mat_all8[ge_l,],scale = "none" ,cluster_cols = F,show_rownames = F,show_colnames = F,border_color=NA ,color = BlueAndRed(),fontsize_row=7,treeheight_row = 0,filename=file.path(fig_dir,"201112_03_DV_combine_heatmap_s.pdf"),width = 4,height = 6)
+```
+
+
+```{r}
+cc1 <- scales::seq_gradient_pal("black","#FF5D43")(seq(0,1,length.out=50))
+pheatmap::pheatmap(expr_mat_all[c("Fgfbp3","Prdm8","Irx5","Hs3st3b1","Emid1","Sema5b","Zic1","Pax3","Olig2","Nkx6-1","Nkx2-9","Shh"),],scale = "row" ,cluster_cols = F,show_rownames = T,show_colnames = F,border_color=NA ,color = cc1,fontsize_row=7,treeheight_row = 0,filename=file.path(fig_dir,"201112_03_DV_selected_genes.pdf"),width = 4,height = 2)
+
+for (sel_onege in c("Fgfbp3","Prdm8","Irx5","Hs3st3b1","Emid1","Sema5b","Zic1","Pax3","Olig2","Nkx6-1","Nkx2-9","Shh")) {
+  pheatmap::pheatmap(expr_mat_all[sel_onege,,drop=F],scale = "row" ,cluster_rows = F,cluster_cols = F,show_rownames = T,show_colnames = F,border_color=NA ,color = cc1,filename = file.path(fig_dir, paste0("bin_",sel_onege,"_expr.pdf")),width = 2.5,height = 0.5)
+}
+
+```
+
+
+```{r}
+cc <- scales::seq_gradient_pal("black","#F040FC")(seq(0,1,length.out=50))
+
+
+for (sel_onege in c("Fgfbp3","Prdm8","Irx5","Hs3st3b1","Emid1","Sema5b","Zic1","Pax3","Olig2","Nkx6-1","Nkx2-9","Shh")) {
+  img_file = file.path("data","image_genes","DV_Quantification",paste0(sel_onege,".xlsx"))
+  img_data = read_excel(img_file)
+  img_data$bins = as.numeric(cut2(img_data$`Distance_(microns)`, g=15))
+  img_data = img_data %>% group_by(bins) %>% summarise(avg_val=mean(Gray_Value))
+  pheatmap::pheatmap(t(img_data["avg_val"]),scale = "row" ,cluster_rows = F,cluster_cols = F,show_rownames = T,show_colnames = F,border_color=NA ,color = cc,labels_row= sel_onege,filename = file.path(fig_dir, paste0("image_bin_",sel_onege,"_expr.pdf")),width = 2.5,height = 0.5)
+}
+```
+
+
+
