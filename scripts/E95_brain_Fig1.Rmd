@@ -1,0 +1,431 @@
+---
+title: "E95 brain analysis"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(pheatmap)
+library(tidyverse)
+fig_dir = file.path("figs","brain_plot")
+dir.create(fig_dir)
+```
+
+```{r}
+srt95 = readRDS(file = "data/srt_E95.Rds")
+```
+
+```{r}
+srt33 = srt95[,srt95$orig.ident=="201104_33"]
+```
+
+```{r}
+library(dbscan)
+
+
+db_out = dbscan(srt33@reductions$spatial@cell.embeddings,60)
+
+ggplot(data=NULL,aes(x=srt33@reductions$spatial@cell.embeddings[,1],y=srt33@reductions$spatial@cell.embeddings[,2],col= factor(db_out$cluster)))+
+         geom_point(size=0.8)+
+  coord_fixed()+
+  theme_classic()
+
+sel_clu = names(table(db_out$cluster)[order(table(db_out$cluster),decreasing = T)][1])
+sel_clu
+srt33 = srt33[,db_out$cluster==sel_clu]
+```
+
+
+```{r}
+DimPlot(srt33,reduction = "spatial")+coord_fixed()
+```
+
+
+```{r}
+saveRDS(srt33,file="data/srt33_clean.Rds")
+```
+
+
+
+```{r}
+sel_cluster = 23
+```
+
+
+```{r}
+DimPlot(srt33,reduction = "spatial",cells.highlight=colnames(srt33)[srt33$seurat_clusters==sel_cluster])+ggtitle(paste0("cluster ",sel_cluster))+coord_fixed()
+```
+
+```{r}
+srt_sel = srt33[,srt33$seurat_clusters==sel_cluster]
+
+db_out = dbscan(srt_sel@reductions$spatial@cell.embeddings,60)
+
+ggplot(data=NULL,aes(x=srt_sel@reductions$spatial@cell.embeddings[,1],y=srt_sel@reductions$spatial@cell.embeddings[,2],col= factor(db_out$cluster)))+
+         geom_point(size=0.8)+
+  coord_fixed()+
+  theme_classic()
+
+sel_clu = names(table(db_out$cluster)[order(table(db_out$cluster),decreasing = T)][1])
+sel_clu
+srt_sel = srt_sel[,db_out$cluster==sel_clu]
+```
+
+
+```{r}
+library(edgeR)
+library(limma)
+
+cnts = srt_sel@assays$RNA@counts
+cnts = cnts[rowSums(cnts)>20,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel@reductions$spatial@cell.embeddings[,2])
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top = topTags(lrt,n=Inf)
+  top
+```
+
+
+```{r}
+srt_markers = srt_sel@misc$markers
+top10 <- srt_markers[srt_markers$p_val_adj<0.01,] #%>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10$pct_diff = top10$pct.1-top10$pct.2
+top10 = top10[top10$pct_diff>0.1,]
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+
+top10 = top10[top10$cluster %in% sel_cluster,]
+```
+
+```{r}
+top_sel = top$table[rownames(top$table) %in% top10$gene,]
+top_sel = top_sel[top_sel$FDR<0.05,]
+write.csv(top_sel,file =file.path(fig_dir, paste0("DE_markersforcluster_",sel_cluster,".csv")))
+top_sel
+```
+
+
+
+```{r}
+sel_gene = c("Tcf7l2","Nr2f2","Wfdc1","Tal2","Boc","Zic4")
+FeaturePlot(srt_sel,features = sel_gene,reduction = "spatial",coord.fixed = T,order=T,pt.size=0.5,ncol=3)
+ggsave(file.path(fig_dir,paste0("markergene_",sel_cluster,"_region.pdf")))
+```
+
+```{r,fig.width=9,fig.height=4}
+FeaturePlot(srt33,features = sel_gene,reduction = "spatial",coord.fixed = T,order=T,ncol=3,pt.size=0.01)
+ggsave(file.path(fig_dir,paste0("markergene_",sel_cluster,"_allpuck.pdf")))
+```
+
+
+```{r}
+sel_clusters = c(23, 27)
+srt_sel = srt33[,srt33$seurat_clusters %in% sel_clusters]
+
+db_out = dbscan(srt_sel@reductions$spatial@cell.embeddings,60)
+
+ggplot(data=NULL,aes(x=srt_sel@reductions$spatial@cell.embeddings[,1],y=srt_sel@reductions$spatial@cell.embeddings[,2],col= factor(db_out$cluster)))+
+         geom_point(size=0.8)+
+  coord_fixed()+
+  theme_classic()
+
+sel_clu = names(table(db_out$cluster)[order(table(db_out$cluster),decreasing = T)][1])
+
+srt_sel = srt_sel[,db_out$cluster==sel_clu]
+
+
+cnts = srt_sel@assays$RNA@counts
+cnts = cnts[rowSums(cnts)>20,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel@reductions$spatial@cell.embeddings[,2])
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top = topTags(lrt,n=Inf)
+
+
+srt_markers = srt_sel@misc$markers
+top10 <- srt_markers[srt_markers$p_val_adj<0.01,] #%>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10$pct_diff = top10$pct.1-top10$pct.2
+top10 = top10[top10$pct_diff>0.2,]
+#top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+
+top10 = top10[top10$cluster %in% sel_clusters,]
+
+top_sel = top$table[rownames(top$table) %in% top10$gene,]
+top_sel = top_sel[top_sel$FDR<0.05,]
+write.csv(top_sel,file =file.path(fig_dir, paste0("DE_markersforcluster_23_27.csv")))
+top_sel
+```
+
+```{r}
+sel_gene = c("Tcf7l2","Dmrta2","Rprm","Tubb3","Pcdh8","Shh")
+FeaturePlot(srt_sel,features = sel_gene,reduction = "spatial",coord.fixed = T,order=T,pt.size=0.5,ncol=3)
+ggsave(file.path(fig_dir,paste0("markergene_23_27_region.pdf")))
+```
+
+```{r,fig.width=9,fig.height=4}
+FeaturePlot(srt33,features = sel_gene,reduction = "spatial",coord.fixed = T,order=T,ncol=3,pt.size=0.01)
+ggsave(file.path(fig_dir,paste0("markergene_23_27_allpuck.pdf")))
+```
+
+```{r}
+DimPlot(srt_sel,reduction = "spatial")+coord_fixed()
+```
+
+
+```{r}
+srt_sel$MHB = "no"
+srt_sel$MHB[srt_sel$ycoord>2900 & srt_sel$ycoord < 3180 & srt_sel$xcoord>4900] = "yes"
+
+DimPlot(srt_sel,reduction = "spatial",group.by = "MHB")+coord_fixed()
+```
+
+
+```{r}
+markers.MHB = FindMarkers(srt_sel, group.by = "MHB",ident.1 = "yes",ident.2 = "no",verbose = F)
+markers.MHB[markers.MHB$p_val_adj<0.05,]
+```
+```{r,fig.width=10,fig.height=8}
+sel_gene = rownames(markers.MHB[markers.MHB$p_val_adj<0.05,])
+FeaturePlot(srt_sel,features = sel_gene,reduction = "spatial",coord.fixed = T,order=T,pt.size=0.3,ncol=4)
+ggsave(file.path(fig_dir,paste0("markergene_23_27_MHB.pdf")))
+```
+
+## eye genes
+
+```{r}
+eye_genes = c("Rax", "Vax1", "Vax2", "Pax2", "Six6")
+FeaturePlot(srt33,features = eye_genes,reduction = "spatial",coord.fixed = T,order=T,ncol=3,pt.size=0.01)
+```
+
+```{r}
+srt33_eye = ScaleData(srt33,features = unique(c(VariableFeatures(srt33), eye_genes)) ,verbose=F)
+```
+
+
+
+```{r}
+expand_genes = c()
+for(ge in c("Rax","Vax1","Six6")){
+  print(ge)
+  corr = t(cor((srt33_eye@assays$RNA@scale.data[ge,]), t(srt33_eye@assays$RNA@scale.data )))[,1]
+  corr = corr[!is.na(corr)]
+  corr = corr[order(corr,decreasing = T)]
+  expand_genes = c(expand_genes, names(head(corr))[2:6])
+}
+
+```
+
+
+
+```{r}
+srt33_eye = RunPCA(srt33_eye, npcs = 5,features=unique(c(expand_genes,eye_genes)),verbose=F)
+srt33_eye = FindNeighbors(srt33_eye,dims = 1:5,verbose=F)
+srt33_eye = FindClusters(srt33_eye,verbose=F)
+```
+
+
+```{r}
+DimPlot(srt33_eye,reduction = "spatial")
+```
+
+
+```{r}
+sel_spa = srt33_eye@reductions$spatial@cell.embeddings[srt33_eye$seurat_clusters==1,]
+plot(sel_spa)
+db_out = dbscan(sel_spa,eps=50)
+
+ggplot(data=NULL,aes(x=sel_spa[,1],y=sel_spa[,2],col=as.factor(db_out$cluster)))+
+  geom_point()
+idx = rownames(sel_spa)[db_out$cluster==1]
+srt33_eye$eye = "no"
+srt33_eye$eye[colnames(srt33_eye) %in% idx] = "yes"
+```
+
+```{r}
+paste(sum(srt33_eye$eye=="yes"),"/",ncol(srt33_eye[,srt33_eye$RNA_snn_res.1 %in% c(0,1,15,21,23,27)]),"=",sum(srt33_eye$eye=="yes")/ncol(srt33_eye[,srt33_eye$RNA_snn_res.1 %in% c(0,1,15,21,23,27)]))
+
+paste(sum(srt33_eye$eye=="yes"),"/",sum(srt33_eye$RNA_snn_res.1==0),"=", sum(srt33_eye$eye=="yes")/sum(srt33_eye$RNA_snn_res.1==0))
+
+paste(sum(srt33_eye$RNA_snn_res.1==0),"/",ncol(srt33_eye),"=", sum(srt33_eye$RNA_snn_res.1==0)/ncol(srt33_eye))
+```
+
+
+
+
+```{r}
+marker.eye = FindMarkers(srt33_eye,group.by = "eye", ident.1 = "yes",ident.2 = "no",min.diff.pct = 0.1,verbose = F)
+write.csv(marker.eye[marker.eye$p_val_adj<0.01 & marker.eye$avg_log2FC>0,],file="data/eyes_marker.csv")
+```
+
+
+```{r}
+DimPlot(srt33_eye,reduction = "spatial",group.by = "eye",cols = c("grey80","dodgerblue2"),pt.size=0.3)+coord_fixed()+theme_void()
+ggsave(file.path(fig_dir,paste0("spatial_eye_region.pdf")))
+```
+
+```{r}
+srt33_eye_sel = srt33_eye[,srt33_eye$eye=="yes"]
+srt33_eye_sel = FindVariableFeatures(srt33_eye_sel,nfeatures = 1000)
+srt33_eye_sel = ScaleData(srt33_eye_sel,features =  unique(c(VariableFeatures(srt33_eye_sel), c("Cp","Vwc2"))))
+expand_genes_eye = c()
+for(ge in c("Cp","Vwc2")){
+  print(ge)
+  corr = t(cor((srt33_eye_sel@assays$RNA@scale.data[ge,]), t(srt33_eye_sel@assays$RNA@scale.data )))[,1]
+  corr = corr[!is.na(corr)]
+  corr = corr[order(corr,decreasing = T)]
+  expand_genes_eye = c(expand_genes_eye, names(head(corr,n=10))[2:10])
+}
+```
+
+
+```{r}
+
+srt33_eye_sel = RunPCA(srt33_eye_sel, npcs = 5,features=unique(c(expand_genes_eye,c("Cp","Vwc2"))),verbose=F)
+srt33_eye_sel = FindNeighbors(srt33_eye_sel,k.param=10,dims = 1:5)
+srt33_eye_sel = FindClusters(srt33_eye_sel)
+
+DimPlot(srt33_eye_sel,reduction = "spatial",pt.size = 4)+coord_fixed()
+ggsave(file.path(fig_dir,"eye_subset_clustering.pdf"))
+```
+
+```{r}
+eye_sub.markers = FindAllMarkers(srt33_eye_sel)
+top10 <- eye_sub.markers %>% group_by(cluster) %>% top_n(n = 10, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt33_eye_sel,features = unique(c(unique(top10$gene),"Cp","Vwc2")),cols="Spectral")+coord_flip()
+ggsave(file.path(fig_dir,"eye_subset_markers_dotplot.pdf"))
+```
+
+
+```{r}
+FeaturePlot(srt33_eye_sel,features = c("Vwc2","Jkamp","Cp","Tlk1","Pon2","Ict1"),coord.fixed = T,sort.cell = T,reduction = "spatial",ncol = 3)
+ggsave(file.path(fig_dir,"eye_subset_markers_spatial.pdf"))
+```
+
+
+
+```{r, fig.width=12,fig.height=8}
+pp = FeaturePlot(srt33_eye,features = rownames(marker.eye)[1:12],order = T,raster = F,ncol = 4,coord.fixed = T,reduction = "spatial",max.cutoff = "q99")
+ggsave(file.path(fig_dir,paste0("spatial_eye_markers.pdf")),plot = pp,width = 14,height = 9)
+```
+
+
+```{r}
+srt36 = srt95[,srt95$orig.ident=="201104_36"]
+```
+
+```{r, fig.width=12,fig.height=8}
+pp = FeaturePlot(srt36,features = rownames(marker.eye)[1:12],order = T,raster = F,ncol = 4,coord.fixed = T,reduction = "spatial",max.cutoff = "q99")
+ggsave(file.path(fig_dir,paste0("spatial_eye_markers_36.pdf")),plot = pp,width = 14,height = 9)
+```
+
+```{r}
+load("~/scRNAseq_reference_datasets/WT.Robj")
+```
+
+
+```{r}
+DimPlot(WT)
+```
+
+
+```{r}
+FeaturePlot(WT,features = c("Six6","Cp","Vwc2"),order=T)
+```
+
+```{r,fig.width=14,fig.height=9}
+FeaturePlot(WT,features = c("Six6","Cp","Vwc2"),order=T,split.by = "stage")
+```
+
+```{r}
+hist(WT@assays$RNA@data["Six6",][WT@assays$RNA@data["Six6",]>0.5])
+```
+
+
+```{r}
+WT$eye_cluster = WT@assays$RNA@data["Six6",]>0.7
+table(WT$eye_cluster)
+```
+sparse.cor2
+
+```{r}
+DimPlot(WT,group.by="eye_cluster",order=T)
+```
+
+```{r}
+table(WT$eye_cluster,WT$stage)
+```
+
+```{r}
+table(WT$eye_cluster,WT$cluster)
+```
+
+
+```{r}
+WT$eye_clu_fine = "no"
+WT$eye_clu_fine[ WT$cluster==10]="clu10"
+WT$eye_clu_fine[WT$eye_cluster & WT$cluster==10]="eye_10"
+WT$eye_clu_fine[ WT$cluster==24]="clu24"
+WT$eye_clu_fine[WT$eye_cluster & WT$cluster==24]="eye_24"
+table(WT$eye_clu_fine)
+```
+
+```{r}
+markers_24 = FindMarkers(WT,ident.1 = "24",group.by = "cluster",only.pos = T,min.diff.pct = 0.1,verbose = F)
+```
+
+
+```{r}
+eye.10_ref = FindMarkers(WT,ident.1 = "eye_10",ident.2 = "clu10",group.by = "eye_clu_fine",min.diff.pct = 0.1,verbose = F)
+eye.10_ref = eye.10_ref[eye.10_ref$p_val_adj<0.01,]
+eye.10_ref = eye.10_ref[eye.10_ref$pct.1>0.3 & eye.10_ref$pct.2<0.1,]
+eye.10_ref
+```
+
+```{r}
+eye.24_ref = FindMarkers(WT,ident.1 = "eye_24",ident.2 = "clu24",group.by = "eye_clu_fine",min.diff.pct = 0.1,verbose = F)
+eye.24_ref = eye.24_ref[eye.24_ref$p_val_adj<0.01,]
+eye.24_ref = eye.24_ref[eye.24_ref$pct.1>0.3 & eye.24_ref$pct.2<0.1,]
+eye.24_ref
+```
+
+```{r,fig.width=8,fig.height=6}
+FeaturePlot(WT,features = rownames(eye.10_ref),order=T,ncol=3)
+```
+```{r,fig.width=8,fig.height=6}
+FeaturePlot(WT,features = rownames(eye.24_ref),order=T,ncol=3)
+```
+
+```{r}
+FeaturePlot(srt33,features = rownames(eye.10_ref),reduction = "spatial",coord.fixed = T,order=T,ncol=3,pt.size=0.01)
+```
+
+```{r}
+FeaturePlot(srt33,features = rownames(eye.24_ref),reduction = "spatial",coord.fixed = T,order=T,ncol=3,pt.size=0.01)
+```
+
+
+```{r,fig.width=12,fig.height=6}
+FeaturePlot(srt33,features = c("Six6","Aldh1a3"),reduction = "spatial",coord.fixed = T,order=T,blend = T,pt.size=0.2)
+```
+
+```{r}
+srt85 = readRDS(file = "data/srt_E85.Rds")
+```
+
+
+```{r,fig.width=46,fig.height=10}
+FeaturePlot(srt85,features = c("Six6","Aldh1a3","Foxg1","Cp","Vwc2"),split.by = "orig.ident",ncol=4,reduction = "spatial",coord.fixed = T,order=T)
+ggsave(file.path(fig_dir,"eye_markers_E85.pdf"))
+```
+
+
+

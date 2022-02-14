@@ -1,0 +1,1261 @@
+---
+title: "trunk developmental trajectories E8.5 and E9.5"
+output: html_notebook
+---
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+
+
+```{r}
+library(Seurat)
+library(monocle3)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(ggpubr)
+library(RColorBrewer)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+fig_dir = file.path("figs","trunk_all")
+dir.create(fig_dir)
+
+```
+
+## Select beads corresponding to trunk region
+
+```{r}
+srt = readRDS(file = "data/srt_all_merged.Rds")
+```
+
+
+```{r}
+srt_sub = srt[,(srt$predicted.id %in% c(18, 30, 31,39) & srt$prediction.score.max>0.60)]
+```
+
+```{r}
+table(srt$predicted.id %in% c(18, 30, 31,39))
+table(srt$predicted.id %in% c(18, 30, 31,39) & srt$prediction.score.max>0.6)
+```
+
+```{r}
+table(srt$predicted.id %in% c(18, 30, 31,39) & srt$prediction.score.max>0.6)[2]/table(srt$predicted.id %in% c(18, 30, 31,39))[2]
+```
+
+
+```{r}
+pheatmap::pheatmap(srt_sub@meta.data[,c("prediction.score.39","prediction.score.18","prediction.score.31","prediction.score.30")])
+```
+
+
+
+```{r}
+srt_sub = FindVariableFeatures(srt_sub)
+srt_sub = RunPCA(srt_sub,features = VariableFeatures(srt_sub))
+srt_sub <- RunUMAP(srt_sub, dims = 1:20,min.dist = 0.2)
+srt_sub <- FindNeighbors(srt_sub, dims = 1:20)
+srt_sub <- FindClusters(srt_sub)
+
+p1 = DimPlot(srt_sub, label=T)
+p2 = DimPlot(srt_sub,group.by = "stage")
+p1+p2
+```
+
+
+```{r}
+DimPlot(srt_sub,group.by = "predicted.id")
+```
+
+## Data integration with Harmony
+
+```{r}
+library(harmony)
+```
+
+
+```{r}
+
+srt_sub <- srt_sub %>% 
+    RunHarmony("stage", plot_convergence = TRUE)
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+srt_sub <- srt_sub %>% 
+    RunUMAP(reduction = "harmony", dims = 1:30) %>% 
+    FindNeighbors(reduction = "harmony", dims = 1:30) %>% 
+    FindClusters(resolution = 0.8) %>% 
+    identity()
+```
+
+
+```{r}
+srt_sub = srt_sub[,!srt_sub$seurat_clusters==15]
+```
+
+
+
+```{r}
+p1 = DimPlot(srt_sub, label=T,reduction="umap",group.by = "predicted.id")
+p2 = DimPlot(srt_sub,label=T)
+p1+p2
+```
+
+```{r,eval=TRUE}
+srt_sub = srt_sub[,!(srt_sub@reductions$umap@cell.embeddings[,2]>2.5 & srt_sub$predicted.id==39)]
+srt_sub = srt_sub[,!(srt_sub@reductions$umap@cell.embeddings[,2]<4 & srt_sub$predicted.id==18)]
+```
+
+```{r}
+srt.marker = FindAllMarkers(srt_sub,min.diff.pct = 0.05,verbose = T)
+```
+
+
+```{r,fig.width=8,fig.height=14}
+top10 <- srt.marker %>% group_by(cluster) %>% top_n(n = 20, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+DotPlot(srt_sub,features = unique(top10$gene),cluster.idents=F,cols="Spectral")+coord_flip()
+ggsave(file.path(fig_dir,"marker_per_cluster.pdf"),width = 6,height = 12)
+```
+
+```{r,fig.width=6,fig.height=12}
+DotPlot(srt,features = c("Pla2g7","Fgf8","Epcam","Apela","Rhox5"),group.by = "predicted.id",cluster.idents=F,cols="Spectral")
+```
+
+
+
+```{r}
+known_markers = read.csv(text = "Sox2
+T
+Cdx2
+Cdx4
+Fgf8
+Lin28a
+Lin28b
+Cyp26a1
+Wnt3a
+Wnt5a
+Nkx1-2
+Hoxaas3
+Fgf17
+Tbx6
+Hes7
+Dll1
+Dll3
+Mesp2
+Ripply2
+Cer1
+Aldh1a2
+Rspo3
+Axin2
+Mesp1
+Lef1
+Notch1
+Notch2
+Lfng
+Msgn1
+Tcf15
+Uncx4.1
+Tbx18
+Pax3
+Pax1
+Meox1
+Meox2
+Scx
+Met
+Myf5
+Sox9
+Wnt11
+Wnt6
+Irx3
+Id1
+Id2
+Id3
+Olig2
+Nkx6-1
+Nkx6-2
+Nkx2-2
+Nkx3-1
+Msx1
+Msx3
+Zic1
+Zic5
+Dbx1
+Dbx2
+Sox1
+Nes
+Pax6
+Pax7
+Sp8
+Neurog2
+Crabp2
+Sox3
+En1
+En2
+Hesx1
+Dmbx1
+Wnt1
+Nog
+Shh",header=F)
+known_markers = known_markers$V1
+pdf(file.path(fig_dir,"umap_marker_harmony.pdf"),width =9,height = 8)
+for (i in 1:ceiling( length(known_markers)/6 )) {
+  p = FeaturePlot(srt_sub,features = known_markers[(6*(i-1)+1):min(6*i,length(known_markers))],order = T,raster=T)
+  print(p)
+}
+dev.off()
+```
+
+
+
+```{r}
+DimPlot(srt_sub,group.by = "predicted.id",reduction="umap",split.by = "stage")
+```
+
+## use Monocle3 to calaulate the trajectories
+
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+
+#srt_sub1 <- DietSeurat(srt_sub)
+
+cds <- as.cell_data_set(srt_sub)
+cds <- cluster_cells(cds,reduction_method="UMAP")
+p1 <- plot_cells(cds, show_trajectory_graph = FALSE)
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE)
+wrap_plots(p1, p2)
+```
+
+
+```{r}
+cds <- learn_graph(cds)
+plot_cells(cds, label_groups_by_cluster = FALSE, label_leaves = FALSE, label_branch_points = FALSE)
+
+```
+
+
+
+```{r}
+root_cell = colnames(srt_sub)[order(srt_sub@reductions$umap@cell.embeddings[,1],decreasing = F)[1]]
+cds <- order_cells(cds,root_cells=root_cell)
+plot_cells(cds, color_cells_by = "pseudotime", label_cell_groups = FALSE, label_leaves = FALSE, 
+           label_branch_points = FALSE)
+ggsave(filename = file.path(fig_dir,"umap_monocle3_pseudotime.pdf"),width = 6.5,height = 6)
+```
+
+
+```{r}
+srt_sub$pseudotime = pseudotime(cds)[colnames(srt_sub)]
+```
+
+```{r}
+mycolors <- colorRampPalette(ggsci::pal_rickandmorty()(10))(length(levels(srt_sub$seurat_clusters)))
+names(mycolors) = levels(srt_sub$seurat_clusters)
+```
+
+```{r}
+library(ggpubr)
+
+pdf(file.path(fig_dir,"spatial_clusters_split.pdf"),width = 9,height = 4)
+for (puck_id in unique(srt_sub$orig.ident)[unique(srt_sub$orig.ident)!="201104_27"]){
+    print(puck_id)
+    plot_id = paste0(puck_id," Neural")
+  p1 = DimPlot(srt_sub[,srt_sub$orig.ident==puck_id & srt_sub$predicted.id %in% c(31,39)],cols = mycolors,reduction = "spatial") +ggtitle(plot_id)
+  
+  plot_id = paste0(puck_id," Somite")
+  p2 = DimPlot(srt_sub[,srt_sub$orig.ident==puck_id & srt_sub$predicted.id %in% c(31,30,18)],cols = mycolors,reduction = "spatial") +ggtitle(plot_id)
+  print(p1+p2)
+
+}
+dev.off()
+```
+
+
+```{r}
+pdf(file.path(fig_dir,"spatial_clusters_split_pseudotime.pdf"),width = 9,height = 4)
+for (puck_id in unique(srt_sub$orig.ident)[unique(srt_sub$orig.ident)!="201104_27"] ){
+    plot_id = paste0(puck_id," Neural")
+  p1 = FeaturePlot(srt_sub[,srt_sub$orig.ident==puck_id & srt_sub$predicted.id %in% c(31,39)],features = "pseudotime",reduction = "spatial",keep.scale=NULL,pt.size = 0.3,cols = PurpleAndYellow()) +ggtitle(plot_id)
+  
+  plot_id = paste0(puck_id," Somite")
+  p2 = FeaturePlot(srt_sub[,srt_sub$orig.ident==puck_id & srt_sub$predicted.id %in% c(31,30,18)],features = "pseudotime",reduction = "spatial",keep.scale=NULL,pt.size = 0.3,cols = PurpleAndYellow()) +ggtitle(plot_id)
+  
+print(ggarrange(p1,p2,nrow=1,ncol=2))
+}
+dev.off()
+
+```
+
+
+
+
+
+```{r}
+p1 = DimPlot(srt_sub,label=T,cols = mycolors)+ggtitle("denovo clustering")
+p2 = DimPlot(srt_sub,label=T,group.by = "predicted.id")
+p1 + p2
+ggsave(filename = file.path(fig_dir,"umap_clusters_denovo_annotated.pdf"),width = 13,height = 6)
+```
+
+
+## find genes correlate with pseudotimes
+
+```{r}
+library(edgeR)
+library(limma)
+# NMP -> PSM
+srt_sel1 = srt_sub[,srt_sub$seurat_clusters %in% c(4,7)]
+cnts = srt_sel1@assays$RNA@counts
+cnts = cnts[rowSums(cnts)>10,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel1$pseudotime)
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top = topTags(lrt,n=Inf)
+de_table = top@.Data[[1]]
+de_table = de_table[de_table$FDR<0.01 & abs(de_table$logFC)>0.05,]
+de_table = de_table[rownames(de_table) %in% VariableFeatures(srt_sub),]
+de_table = de_table[rownames(de_table) %in% rownames(srt_sub@assays$RNA@meta.features[srt_sub@assays$RNA@meta.features$vst.mean<2,]),]
+de_table_nmp2psm = de_table
+
+# PSM -> Somite
+srt_sel1 = srt_sub[,srt_sub$seurat_clusters %in% c(4,8)]
+cnts = srt_sel1@assays$RNA@counts
+cnts = cnts[rowSums(cnts)>10,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel1$pseudotime)
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top = topTags(lrt,n=Inf)
+de_table = top@.Data[[1]]
+de_table = de_table[de_table$FDR<0.01 & abs(de_table$logFC)>0.05,]
+de_table = de_table[rownames(de_table) %in% VariableFeatures(srt_sub),]
+de_table = de_table[rownames(de_table) %in% rownames(srt_sub@assays$RNA@meta.features[srt_sub@assays$RNA@meta.features$vst.mean<2,]),]
+de_table_psm2som = de_table
+
+# NMP -> Neural progenitor
+srt_sel1 = srt_sub[,srt_sub$seurat_clusters %in% c(7,6)]
+cnts = srt_sel1@assays$RNA@counts
+cnts = cnts[rowSums(cnts)>10,]
+cnts = as.matrix(cnts)
+allcounts = DGEList(counts=cnts)
+allcounts = estimateDisp(allcounts, robust=TRUE)
+  design_mat = model.matrix(~ srt_sel1$pseudotime)
+  fit = glmQLFit(allcounts, design_mat)
+  lrt = glmQLFTest(fit)
+  top = topTags(lrt,n=Inf)
+de_table = top@.Data[[1]]
+de_table = de_table[de_table$FDR<0.01 & abs(de_table$logFC)>0.05,]
+de_table = de_table[rownames(de_table) %in% VariableFeatures(srt_sub),]
+de_table = de_table[rownames(de_table) %in% rownames(srt_sub@assays$RNA@meta.features[srt_sub@assays$RNA@meta.features$vst.mean<2,]),]
+de_table_NMP2neu = de_table
+```
+
+
+
+```{r}
+somite_color = "#8A2C7C"
+neural_color = "#3F7F6B"
+NMP_color = "#EEA24A"
+
+PSM_color="#C4556C"
+```
+
+```{r}
+
+DimPlot(srt_sub,label=F,group.by = "predicted.id", cols = c(somite_color,PSM_color,NMP_color,neural_color) )+theme_void()
+ggsave(filename = file.path(fig_dir,"umap_annotated_state.pdf"),width = 4,height = 3.9)
+```
+
+```{r}
+DimPlot(srt_sub,label=F,group.by = "predicted.id",split.by = "stage", cols = c(somite_color,PSM_color,NMP_color,neural_color) ) +theme_void()
+ggsave(filename = file.path(fig_dir,"umap_annotated_state_stage_split.pdf"),width = 8,height = 3.9)
+```
+
+pt_neural = "#0B9CCB" 
+pt_neural_1 ="#517FAF"
+pt_NMP = "#F7602A" 
+pt_som = "#3BF7E0" 
+
+```{r}
+pt_neural = "#5A817A" 
+pt_neural_1 ="#4A6A65"
+pt_NMP = "#0E2538" 
+pt_som = "#625847" 
+pt_som1="#5C535E"
+```
+
+```{r}
+pt_neural = "aquamarine4"
+pt_neural_1 ="aquamarine3" #intermediate
+pt_NMP = "darkslateblue"
+pt_som = "palevioletred4"
+pt_som1="palevioletred2" #intermediate
+```
+
+
+
+```{r}
+neural_color_d = "#18695D"
+
+for (puck_id in unique(srt_sub$orig.ident[srt_sub$stage =="E9.5"])) {
+  print(puck_id)
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+  srt_tmp$scaled_pt = srt_tmp$pseudotime
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))] = -tmp
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)] = tmp
+  
+  
+  #FeaturePlot(srt_tmp,features = "scaled_pt",reduction = "spatial",keep.scale=NULL,pt.size = 0.1,cols = c() )
+  
+  plot_df = data.frame(x=srt_tmp$xcoord,y=srt_tmp$ycoord,
+                       umap_x = srt_tmp@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_tmp@reductions$umap@cell.embeddings[,2],
+                       pseudotime=srt_tmp$scaled_pt)
+  plot_background_df = data.frame(x=srt_sub@reductions$umap@cell.embeddings[,1],
+                                  y=srt_sub@reductions$umap@cell.embeddings[,2])
+  plot_sp_bg_df = data.frame(x=srt@reductions$spatial@cell.embeddings[srt$orig.ident==puck_id,1],
+                             y=srt@reductions$spatial@cell.embeddings[srt$orig.ident==puck_id,2])
+  
+  p1 = ggplot(data=plot_df,aes(x=x,y=y,col=pseudotime ))+
+    geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.8)+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  p2 = ggplot()+
+    geom_point(data=plot_background_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(data=plot_df,aes(x=umap_x,y=umap_y,col=pseudotime ),size=.6,alpha=0.8)+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  pp = ggarrange(p2,p1,ncol=2,nrow=1,common.legend = T)
+  ggsave(filename = file.path(fig_dir,paste0("puck_",puck_id,"_pseudotime_umapspatial.pdf" ) ),plot = pp,width = 5,height = 2.6)
+}
+
+
+```
+
+
+```{r}
+img <- png::readPNG("data/Outlines.png")
+puck_id= "201104_32"
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+  srt_tmp$scaled_pt = srt_tmp$pseudotime
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))] = -tmp
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)] = tmp
+  
+  
+  #FeaturePlot(srt_tmp,features = "scaled_pt",reduction = "spatial",keep.scale=NULL,pt.size = 0.1,cols = c() )
+  
+  plot_df = data.frame(x=srt_tmp$xcoord,y=srt_tmp$ycoord,
+                       umap_x = srt_tmp@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_tmp@reductions$umap@cell.embeddings[,2],
+                       pseudotime=srt_tmp$scaled_pt)
+  plot_background_df = data.frame(x=srt_sub@reductions$umap@cell.embeddings[,1],
+                                  y=srt_sub@reductions$umap@cell.embeddings[,2])
+  plot_sp_bg_df = data.frame(x=srt@reductions$spatial@cell.embeddings[srt$orig.ident==puck_id,1],
+                             y=srt@reductions$spatial@cell.embeddings[srt$orig.ident==puck_id,2])
+  
+  p1 =ggplot(data=plot_df,aes(x=x,y=y,col=pseudotime ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.7)+
+  lims(x=c(min(plot_df$x)-700, max(plot_df$x)+150 ),  y=c(min(plot_df$y)-200,max(plot_df$y)+250 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  p2 = ggplot()+
+    geom_point(data=plot_background_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(data=plot_df,aes(x=umap_x,y=umap_y,col=pseudotime ),size=.6,alpha=0.8)+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  pp = ggarrange(p2,p1,ncol=2,nrow=1,common.legend = T)
+  pp
+  #ggsave(filename = file.path(fig_dir,paste0("puck32_outline_pseudotime_umapspatial.pdf" ) ),plot = pp,width = 5,height = 2.9)
+```
+
+
+
+
+```{r}
+img <- png::readPNG("data/outline_puck03.png")
+puck_id= "201112_03"
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+  srt_tmp$scaled_pt = srt_tmp$pseudotime
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))] = -tmp
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)] = tmp
+  
+  
+  #FeaturePlot(srt_tmp,features = "scaled_pt",reduction = "spatial",keep.scale=NULL,pt.size = 0.1,cols = c() )
+  
+  plot_df = data.frame(x=srt_tmp$xcoord,y=srt_tmp$ycoord,
+                       umap_x = srt_tmp@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_tmp@reductions$umap@cell.embeddings[,2],
+                       pseudotime=srt_tmp$scaled_pt,
+                       state=srt_tmp$predicted.id)
+  plot_background_df = data.frame(x=srt_sub@reductions$umap@cell.embeddings[,1],
+                                  y=srt_sub@reductions$umap@cell.embeddings[,2])
+  plot_sp_bg_df = data.frame(x=srt@reductions$spatial@cell.embeddings[srt$orig.ident==puck_id,1],
+                             y=srt@reductions$spatial@cell.embeddings[srt$orig.ident==puck_id,2])
+  
+  p1 =ggplot(data=plot_df,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.7)+
+    coord_fixed()+
+  lims(x=c(min(plot_df$x)-100, max(plot_df$x)-100 ),  y=c(min(plot_df$y)+100,max(plot_df$y) ) )+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(pt_som,pt_som1,pt_NMP,pt_neural_1,pt_neural))+
+    theme_void()
+  p2 = ggplot(data=plot_df,aes(x=x,y=y,col=pseudotime ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.7)+
+  lims(x=c(min(plot_df$x)-100, max(plot_df$x)-100 ),  y=c(min(plot_df$y)+100,max(plot_df$y) ) )+
+    coord_fixed()+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(pt_som,pt_som1,pt_NMP,pt_neural_1,pt_neural))+
+    theme_void()
+  pp = ggarrange(p1,p2,ncol=2,nrow=1,common.legend = F)
+  pp
+  ggsave(filename = file.path(fig_dir,paste0("puck03_outline_state.pdf" ) ),plot = p1,width = 3.3,height = 2.9)
+  ggsave(filename = file.path(fig_dir,paste0("puck03_outline_pseudotime.pdf" ) ),plot = p2,width =3.3,height = 2.9)
+```
+
+## cell state plot
+
+```{r}
+img <- png::readPNG("data/Outlines.png")
+puck_id= "201104_32"
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+
+  
+  #FeaturePlot(srt_tmp,features = "scaled_pt",reduction = "spatial",keep.scale=NULL,pt.size = 0.1,cols = c() )
+  
+  plot_df = data.frame(x=srt_tmp$xcoord,y=srt_tmp$ycoord,
+                       umap_x = srt_tmp@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_tmp@reductions$umap@cell.embeddings[,2],
+                       state=srt_tmp$predicted.id)
+  plot_background_df = data.frame(x=srt_sub@reductions$umap@cell.embeddings[,1],
+                                  y=srt_sub@reductions$umap@cell.embeddings[,2])
+
+  
+  p1 =ggplot(data=plot_df,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.7)+
+  lims(x=c(min(plot_df$x)-700, max(plot_df$x)+150 ),  y=c(min(plot_df$y)-200,max(plot_df$y)+250 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  p2 = ggplot()+
+    geom_point(data=plot_background_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(data=plot_df,aes(x=umap_x,y=umap_y,col=state ),size=.6,alpha=0.8)+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"30"=PSM_color,"31"=NMP_color,"39"=neural_color))+
+    theme_void()
+  pp = ggarrange(p2,p1,ncol=2,nrow=1,common.legend = T)
+  pp
+  ggsave(filename = file.path(fig_dir,paste0("puck32_outline_state_umapspatial.pdf" ) ),plot = pp,width = 5,height = 2.9)
+```
+
+
+
+```{r}
+img <- png::readPNG("data/Outlines.png")
+puck_id= "201104_32"
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+saveRDS(srt_tmp,file="data/srt_tmp.Rds")
+  expr_tmp = t(srt_tmp@assays$RNA@scale.data[c("Olig2", "Olig3", "Nkx6-1", "Nkx2-9", "Pax3", "Pax6", "Pax7", "Dbx2", "Prdm8", "Shh", "Foxa2", "Zic1", "Msx3", "Wnt1"),])
+  #FeaturePlot(srt_tmp,features = "scaled_pt",reduction = "spatial",keep.scale=NULL,pt.size = 0.1,cols = c() )
+  
+  plot_df = data.frame(x=srt_tmp$xcoord,y=srt_tmp$ycoord,
+                       umap_x = srt_tmp@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_tmp@reductions$umap@cell.embeddings[,2])
+  plot_df = cbind(plot_df,expr_tmp)
+  plot_background_df = data.frame(x=srt_sub@reductions$umap@cell.embeddings[,1],
+                                  y=srt_sub@reductions$umap@cell.embeddings[,2])
+colnames(plot_df) = gsub("-",".",colnames(plot_df))
+  for (ge in colnames(plot_df)[-c(1:4)]) {
+  plot_df = plot_df[order(plot_df[,ge]),]
+  p1 =ggplot(data=plot_df,aes_string(x="x",y="y",col=ge ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.7)+
+  lims(x=c(min(plot_df$x)-700, max(plot_df$x)+150 ),  y=c(min(plot_df$y)-200,max(plot_df$y)+250 ) )+
+    scale_color_gradientn(colours=BlueAndRed()[20:50])+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    #scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  p2 = ggplot()+
+    geom_point(data=plot_background_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(data=plot_df,aes_string(x="umap_x",y="umap_y",col=ge ),size=.6,alpha=0.8)+
+    scale_color_gradientn(colours=BlueAndRed()[20:50])+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    #scale_color_manual(values = c("18"=somite_color,"30"=PSM_color,"31"=NMP_color,"39"=neural_color))+
+    theme_void()
+  pp = ggarrange(p2,p1,ncol=2,nrow=1,common.legend = T)
+  #pp
+  ggsave(filename = file.path(fig_dir,"gene_expr",paste0("puck32_umapspatial_",ge,".pdf" ) ),plot = pp,width = 5,height = 2.9)
+  }
+```
+
+
+```{r}
+res_list = list()
+for (puck_id in unique(srt_sub$orig.ident)) {
+  print(puck_id)
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+  dist_spatial = as.matrix(dist(srt_tmp@reductions$spatial@cell.embeddings))
+  
+  mean_dist = function(ix){
+    tmp = dist_spatial[ix,]
+    tmp = tmp[order(tmp)]
+    tmp = tmp[2:min(3,length(tmp))]
+    mean(srt_tmp$pseudotime[colnames(srt_tmp) %in% names(tmp)])
+    #mean(tmp)
+  }
+  
+  dist_pt = as.matrix(dist(srt_tmp$pseudotime))
+  
+  mean_pt_dist = function(ix){
+    tmp = dist_pt[ix,]
+    tmp_dist = dist_spatial[ix,]
+    tmp = tmp[order(tmp)]
+    tmp = tmp[2:min(3,length(tmp))]
+    mean(tmp_dist[names(tmp_dist) %in% names(tmp)])
+  }
+  
+  m_dist_top = sapply(1:ncol(srt_tmp),mean_pt_dist)
+  
+  m_dist_sp_top = sapply(1:ncol(srt_tmp), mean_dist)
+  tmp_res = data.frame(row.names = colnames(srt_tmp),pseudotime_dist=m_dist_sp_top,spatial_dist=m_dist_top)
+  res_list[[puck_id]] = tmp_res
+}
+
+spa_pt_var_df = Reduce(rbind, res_list)
+```
+
+
+
+```{r}
+  srt_tmp = srt_sub
+  srt_tmp$scaled_pt = srt_tmp$pseudotime
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,30,18) & !(srt_tmp$seurat_clusters %in% c(6,7))] = -tmp
+  
+  tmp = srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)]
+  #tmp = (tmp-min(tmp))/(max(tmp)-min(tmp))
+  tmp = rank(tmp, ties.method="min")/length(tmp)
+  srt_tmp$scaled_pt[srt_tmp$predicted.id %in% c(31,39) | srt_tmp$seurat_clusters %in% c(6,7)] = tmp
+  
+
+srt_tmp = srt_tmp[,rownames(spa_pt_var_df)]
+srt_tmp$pseudotime_dist = spa_pt_var_df$pseudotime_dist
+srt_tmp$spatial_dist = spa_pt_var_df$spatial_dist
+```
+
+```{r}
+library(reshape2)
+df_dist_list = list()
+
+puck_id_list = c("201104_32","201104_33","201104_36","201112_03","201112_04","201112_05")
+
+for (puck_id in puck_id_list) {
+  print(puck_id)
+  srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+  spatial_d = 0.65*srt_tmp@reductions$spatial@cell.embeddings
+  dist_spatial = as.matrix(dist(spatial_d))
+  dist_spatial[lower.tri(dist_spatial,diag = TRUE)] = NA
+  dist_pt = as.matrix(dist(srt_tmp$pseudotime))
+  dist_pt[lower.tri(dist_pt,diag = TRUE)] = NA
+
+  df_spatial_dist <- reshape2::melt( dist_spatial,value.name="spatial_dist" )
+  df_spatial_dist = df_spatial_dist[!is.na(df_spatial_dist$spatial_dist),]
+  df_pt_dist <- reshape2::melt( dist_pt,value.name="pt_dist" )
+  df_pt_dist = df_pt_dist[!is.na(df_pt_dist$pt_dist),]
+  df_pt_dist$pt_dist[df_pt_dist$pt_dist>20] = 20
+  df_pt_dist$pt_dist = (df_pt_dist$pt_dist-min(df_pt_dist$pt_dist))/(max(df_pt_dist$pt_dist)-min(df_pt_dist$pt_dist))
+  
+  df_dist = df_spatial_dist %>% left_join(df_pt_dist,by=c("Var1"="Var1","Var2"="Var2"))
+  
+  cell_id_df = data.frame(cell_id=colnames(srt_tmp),cell_state1=srt_tmp$predicted.id)
+  df_dist = df_dist %>% left_join(cell_id_df,by=c("Var1"="cell_id"))
+  cell_id_df = data.frame(cell_id=colnames(srt_tmp),cell_state2=srt_tmp$predicted.id)
+  df_dist = df_dist %>% left_join(cell_id_df,by=c("Var2"="cell_id"))
+  df_dist$pair_stat = paste(df_dist$cell_state1,df_dist$cell_state2,sep = "_")
+  df_dist = df_dist[df_dist$pair_stat %in% c("18_18","30_30","31_31","39_39"),]
+  df_dist$puck_id = puck_id
+  df_dist_list[[puck_id]] = df_dist
+}
+
+
+```
+
+```{r}
+df_dist_E95 = Reduce(rbind, df_dist_list)
+```
+
+Fig2E
+
+```{r}
+plot_df = df_dist_E95
+pp1 = ggplot(data=plot_df[plot_df$pair_stat=="18_18",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#8A2C7C"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "Somite",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+pp2 = ggplot(data=plot_df[plot_df$pair_stat=="30_30",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#C4556C"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "PSM",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+ 
+  theme_classic()
+pp3 = ggplot(data=plot_df[plot_df$pair_stat=="31_31",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#EEA24A"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "NMP",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+pp4 = ggplot(data=plot_df[plot_df$pair_stat=="39_39",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#3F7F6B"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "Neural tube",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+
+ggarrange(pp1,pp2,pp3,pp4)
+ggsave(file.path(fig_dir,"pt_spatial_density_puckE95.pdf"))
+```
+
+
+
+```{r}
+plot_df = df_dist_list$`201112_03`
+pp1 = ggplot(data=plot_df[plot_df$pair_stat=="18_18",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#8A2C7C"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "Somite",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+pp2 = ggplot(data=plot_df[plot_df$pair_stat=="30_30",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#C4556C"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "PSM",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+pp3 = ggplot(data=plot_df[plot_df$pair_stat=="31_31",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#EEA24A"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "NMP",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+pp4 = ggplot(data=plot_df[plot_df$pair_stat=="39_39",],aes(x=spatial_dist,y=pt_dist))+
+  geom_hex(bins=50)+
+  #scale_fill_gradientn(colours=c("white","#3F7F6B"),na.value=NA)+
+  scale_fill_gradientn(colours=c("grey90","#AB1C3A"),na.value=NA)+
+  labs(title = "Neural tube",x="Spatial distance",y="Pseudotime distance")+
+  lims(x=c(0,2500),y=c(0,1))+
+  theme_classic()
+
+ggarrange(pp1,pp2,pp3,pp4)
+ggsave(file.path(fig_dir,"pt_spatial_density_puck03.pdf"))
+```
+
+
+
+
+```{r}
+plot_df = data.frame(x=srt_tmp@reductions$umap@cell.embeddings[,1],
+                     y=srt_tmp@reductions$umap@cell.embeddings[,2],
+                     pt=srt_tmp$scaled_pt)
+
+ggplot(data=plot_df,aes(x=x,y=y,col=pt))+
+  geom_point(alpha=0.8,size=1)+
+  scale_color_gradientn(colours = rainbow(7))+
+  scale_color_gradientn(values = c(0,0.42,0.5,0.58,1),colours = c(pt_som, pt_som1,pt_NMP, pt_neural_1,pt_neural))+
+  theme_void()+
+  coord_fixed()
+#ggsave(file.path(fig_dir,"pseudotime_umap_all.pdf"))
+```
+
+```{r,fig.width=1,fig.height=1}
+pt_neural = "aquamarine4"
+pt_neural_1 ="aquamarine3" #intermediate
+pt_NMP = "darkslateblue"
+pt_som = "palevioletred4"
+pt_som1="palevioletred2" #intermediate
+img <- png::readPNG("data/Outlines.png")
+plot_df = data.frame(x=srt_tmp@reductions$spatial@cell.embeddings[,1],
+                     y=srt_tmp@reductions$spatial@cell.embeddings[,2],
+                     pt=srt_tmp$scaled_pt,
+                     puck_id=srt_tmp$orig.ident)
+plot_df = plot_df[order(plot_df$pt),]
+ggplot(data=plot_df[plot_df$puck_id=="201104_32",],aes(x=x,y=y,col=pt))+
+  ggpubr::background_image(img)+
+  geom_point(alpha=0.8,size=0.2)+
+   lims(x=c(min(plot_df$x)+700, max(plot_df$x)-100 ),  y=c(min(plot_df$y)+1400,max(plot_df$y)+250 ) )+
+  scale_color_gradientn(values = c(0,0.25,0.5,0.60,1),colours = c(pt_som, pt_som1,pt_NMP, pt_neural_1,pt_neural))+
+  coord_fixed()+
+  theme_void()
+#ggsave(file.path(fig_dir,"pseudotime_spatial_puck03.pdf"))
+```
+
+```{r}
+plot_df
+```
+
+
+```{r}
+known_trunk_markers = read.csv(text = "Sox2
+T
+Cdx2
+Cdx4
+Fgf8
+Lin28a
+Lin28b
+Cyp26a1
+Wnt3a
+Wnt5a
+Nkx1-2
+Hoxaas3
+Fgf17
+Tbx6
+Hes7
+Dll1
+Dll3
+Mesp2
+Ripply2
+Cer1
+Aldh1a2
+Rspo3
+Axin2
+Mesp1
+Lef1
+Notch1
+Notch2
+Lfng
+Msgn1
+Tcf15
+Uncx
+Tbx18
+Pax3
+Pax1
+Meox1
+Meox2
+Scx
+Met
+Myf5
+Sox9
+Wnt11
+Wnt6
+Irx3
+Id1
+Id2
+Id3
+Olig2
+Nkx6-1
+Nkx6-2
+Nkx2-2
+Msx1
+Msx3
+Zic1
+Zic5
+Dbx1
+Dbx2
+Sox1
+Nes
+Pax6
+Pax7
+Sp8
+Neurog2
+Crabp2
+Sox3
+En1
+En2
+Hesx1
+Dmbx1
+Wnt1
+Nog
+Shh",header=F)
+
+known_trunk_markers = known_trunk_markers$V1
+known_trunk_markers = known_trunk_markers[(known_trunk_markers %in% rownames(srt_sub) )]
+table(known_trunk_markers %in% all_markers)
+
+known_trunk_markers[!(known_trunk_markers %in% all_markers)]
+
+```
+
+
+```{r}
+library(gam)
+all_markers = unique(c(rownames(de_table_NMP2neu),
+                       rownames(de_table_psm2som),
+                       rownames(de_table_nmp2psm)))
+
+
+cnt_comb = as.matrix(srt_tmp@assays$RNA@data[known_trunk_markers,order(srt_tmp$scaled_pt)])
+return_fitted = function(ix) {gam::gam(y~s(x),data=data.frame(y=ix,x=1:length(ix) ) )$fitted.values}
+cnts_sel_smooth = t(apply(cnt_comb,1,return_fitted) )
+
+cnts_sel_smooth = t(scale(t(cnts_sel_smooth)))
+cnts_sel_smooth[cnts_sel_smooth>4] = 4
+
+
+cell_annotation = srt_tmp@meta.data[,c("predicted.id","scaled_pt","spatial_dist")]
+
+ann_colors = list(
+    #predicted.id=c(neural_color,NMP_color,somite_color,PSM_color),
+    scaled_pt = c(pt_som, pt_NMP, pt_neural),
+    spatial_dist = c("black","grey90")
+)
+
+pheatmap::pheatmap(cnts_sel_smooth,scale="none",annotation_col = cell_annotation,annotation_colors = ann_colors,cluster_cols = F,show_colnames = F,filename = file.path(fig_dir,"heatmap_allc_pseudotime_knownmarkers.pdf") ,width = 7,height = 8,fontsize_row = 5,clustering_distance_rows="correlation",na_col = "grey90")
+```
+
+
+```{r}
+ggplot(data=srt_tmp@meta.data,aes(x=scaled_pt,y=pseudotime_dist) )+
+  geom_jitter(height = 0,width = 0.1,alpha=0.3)+
+  labs(x="somite <- NMP -> neural",y="pseudotime variability")+
+  theme_classic()
+
+ggplot(data=srt_tmp@meta.data,aes(x=scaled_pt,y=(spatial_dist),col=predicted.id ) )+
+  geom_jitter(height = 0.2,width = 0.1,alpha=0.1,size=.4)+
+  scale_color_manual(values = c(somite_color, PSM_color,NMP_color, neural_color) )+
+  labs(x="",y="average distance on pseudotime neighbors")+
+  theme_classic()+
+  theme(legend.position = "none" )
+ggsave(file.path(fig_dir,"spatial_distance_trajectory.pdf"),width = 4,height = 3)
+
+ggplot(data=srt_tmp@meta.data,aes(x=scaled_pt,y=(spatial_dist),col=predicted.id ) )+
+  geom_jitter(height = 0.2,width = 0.,alpha=0.1,size=.4)+
+  scale_color_manual(values = c(somite_color, PSM_color,NMP_color, neural_color) )+
+  labs(x="",y="average distance on pseudotime neighbors")+
+  theme_classic()+
+  xlim(0,1.1)+
+  theme(legend.position = "none" )
+ggsave(file.path(fig_dir,"spatial_distance_trajectory_neural.pdf"),width = 3,height = 3)
+
+ggplot(data=srt_tmp@meta.data,aes(x=scaled_pt,y=(spatial_dist),col=predicted.id ) )+
+  geom_jitter(height = 0.1,width = 0.,alpha=0.1,size=.4)+
+  scale_color_manual(values = c(somite_color, PSM_color,NMP_color, neural_color) )+
+  labs(x="",y="average distance on pseudotime neighbors")+
+  theme_classic()+
+  xlim(-1.1,0)+
+  theme(legend.position = "none" )
+ggsave(file.path(fig_dir,"spatial_distance_trajectory_somite.pdf"),width = 3,height = 3)
+
+ggplot(data=srt_tmp@meta.data,aes(x=scaled_pt,y=(spatial_dist),col=predicted.id ) )+
+  geom_jitter(height = 0.2,width = 0.,alpha=0.1,size=.4)+
+  scale_color_manual(values = c(somite_color, PSM_color,NMP_color, neural_color) )+
+  labs(x="",y="average distance on pseudotime neighbors")+
+  theme_classic()+
+  theme(legend.position = "none" )
+ggsave(file.path(fig_dir,"spatial_distance_trajectory.pdf"),width = 4,height = 3)
+
+# ggplot(data=srt_tmp@meta.data[srt_tmp$stage=="E9.5",],aes(x=scaled_pt,y=40/(spatial_dist+10),col=predicted.id ) )+
+#   geom_jitter(height = 0.1,width = 0.1,alpha=0.2,size=.2)+
+#   scale_color_manual(values = c(somite_color, PSM_color,NMP_color, neural_color) )+
+#   labs(x="",y="spatial velocity")+
+#   theme_classic()+
+#   theme(legend.position = "none" )
+# ggsave(file.path(fig_dir,"spatial_velocity_trajectory.pdf"),width = 4,height = 3)
+```
+
+```{r}
+puck_id= "201104_32"
+srt_32 = srt_sub[,srt_sub$orig.ident==puck_id]
+srt_32_sel_neu = srt_32$neural_trajectory[srt_32$somite_trajectory==0]
+srt_32_sel_neu = srt_32_sel_neu[order(srt_32_sel_neu)]
+
+srt_32_sel_som = srt_32$somite_trajectory[srt_32$neural_trajectory==0]
+srt_32_sel_som = srt_32_sel_som[order(srt_32_sel_som,decreasing = T)]
+
+
+img <- png::readPNG("data/Outlines.png")
+  plot_df = data.frame(x=srt_32$xcoord,y=srt_32$ycoord,
+                       umap_x = srt_32@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_32@reductions$umap@cell.embeddings[,2],
+                       state=srt_32$predicted.id)
+  plot_df_1 = plot_df[names(srt_32_sel_neu)[1:10],]
+  plot_df_2 = plot_df[names(srt_32_sel_neu)[(length(srt_32_sel_neu)-10):length(srt_32_sel_neu)],]
+  plot_df_3 = plot_df[names(srt_32_sel_som)[1:10],]
+  
+  ggplot(data=plot_df_1,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=2)+
+  #lims(x=c(min(plot_df_1$x)-200, max(plot_df_1$x)+150 ),  y=c(min(plot_df_1$y)-200,max(plot_df_1$y)+250 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    coord_fixed()+
+    xlim(c(min(plot_df$x)-400,max(plot_df$x)))+
+    ylim(c(min(plot_df$y),max(plot_df$y)+300))+
+     guides(col="none")+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  ggsave(file.path(fig_dir,"toymodel_32_PSM.pdf"),width = 3,height = 3)
+  
+    ggplot(data=plot_df_2,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=2)+
+  #lims(x=c(min(plot_df_1$x)-200, max(plot_df_1$x)+150 ),  y=c(min(plot_df_1$y)-200,max(plot_df_1$y)+250 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    coord_fixed()+
+    xlim(c(min(plot_df$x)-990,max(plot_df$x)))+
+    ylim(c(min(plot_df$y)-300,max(plot_df$y)+300))+
+     guides(col="none")+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+    ggsave(file.path(fig_dir,"toymodel_32_neural.pdf"),width = 3,height = 3)
+    
+        ggplot(data=plot_df_3,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=2)+
+  #lims(x=c(min(plot_df_1$x)-200, max(plot_df_1$x)+150 ),  y=c(min(plot_df_1$y)-200,max(plot_df_1$y)+250 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    coord_fixed()+
+    xlim(c(min(plot_df$x)-590,max(plot_df$x)))+
+    ylim(c(min(plot_df$y)-300,max(plot_df$y)+300))+
+     guides(col="none")+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+        ggsave(file.path(fig_dir,"toymodel_32_somite.pdf"),width = 3,height = 3)
+```
+
+
+
+```{r}
+img <- png::readPNG("data/Outlines.png")
+puck_id= "201104_32"
+  #srt_tmp = srt_sub[,srt_sub$orig.ident==puck_id]
+
+  
+  #FeaturePlot(srt_tmp,features = "scaled_pt",reduction = "spatial",keep.scale=NULL,pt.size = 0.1,cols = c() )
+  
+  plot_df = data.frame(x=srt_tmp$xcoord,y=srt_tmp$ycoord,
+                       umap_x = srt_tmp@reductions$umap@cell.embeddings[,1],
+                       umap_y = srt_tmp@reductions$umap@cell.embeddings[,2],
+                       state=srt_tmp$predicted.id)
+  plot_df_1 = plot_df[srt_tmp$scaled_pt>0.8 & srt_tmp$orig.ident==puck_id,]
+  plot_df_2 = plot_df[srt_tmp$scaled_pt>(-0.1) & srt_tmp$scaled_pt<0.1 & srt_tmp$orig.ident==puck_id,]
+
+  
+  p1 =ggplot(data=plot_df_1,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=1,alpha=0.7)+
+  lims(x=c(min(plot_df_1$x)-800, max(plot_df_1$x)+150 ),  y=c(min(plot_df_1$y)-200,max(plot_df_1$y)+250 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+    coord_fixed()+
+     guides(col="none")+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+    p2 =ggplot(data=plot_df_2,aes(x=x,y=y,col=state ))+
+  ggpubr::background_image(img)+
+    #geom_point(data=plot_sp_bg_df,aes(x=x,y=y ),color="grey90",size=0.1)+
+    geom_point(size=.6,alpha=0.7)+
+  lims(x=c(min(plot_df_1$x)-700, max(plot_df_1$x)+150 ),  y=c(min(plot_df_1$y)-200,max(plot_df_1$y)+400 ) )+
+    #scale_color_gradient2(low=somite_color,mid =NMP_color,high =  neural_color)+
+    scale_color_manual(values = c("18"=somite_color,"31"=PSM_color,"30"=NMP_color,"39"=neural_color))+
+      guides(col="none")+
+      coord_fixed()+
+    #scale_color_gradientn(values = c(0,0.4,0.5,0.6,1),colours = c(somite_color,PSM_color,NMP_color,"#7BBD6C",neural_color_d))+
+    theme_void()
+  #ggsave(filename = file.path(fig_dir,paste0("puck32_outline_state_umapspatial.pdf" ) ),plot = pp,width = 5,height = 2.9)
+p1
+p2
+p3
+```
+
+```{r}
+de_table_NMP2neu$trajectory = "NMP2Neural"
+de_table_psm2som$trajectory = "PSM2Somite"
+de_table_nmp2psm$trajectory = "NMP2PSM"
+de_table_NMP2neu$gene_name = rownames(de_table_NMP2neu)
+de_table_psm2som$gene_name = rownames(de_table_psm2som)
+de_table_nmp2psm$gene_name = rownames(de_table_nmp2psm)
+
+de_table_combine = rbind(de_table_NMP2neu, de_table_psm2som, de_table_nmp2psm)
+de_table_combine = de_table_combine[unique(de_table_combine$gene_name),]
+
+write.csv(de_table_combine,"data/de_table_trunk_pseudotime.csv",row.names = F)
+```
+
+
+```{r}
+library(gam)
+all_markers = unique(c(rownames(de_table_NMP2neu),
+                       rownames(de_table_psm2som),
+                       rownames(de_table_nmp2psm)))
+
+
+srt_sel = srt_sub[,srt_sub$predicted.id %in% c(30,18) & srt_sub$seurat_clusters %in% c(4,8,7)]
+cnts_sel1 = as.matrix(srt_sel@assays$RNA@data[all_markers,])
+cnts_sel1 = cnts_sel1[,order(srt_sel$pseudotime,decreasing = T)]
+
+srt_sel = srt_sub[,srt_sub$predicted.id %in% c(31,39) & srt_sub$seurat_clusters %in% c(6,7) & srt_sub$pseudotime<20]
+cnts_sel = as.matrix(srt_sel@assays$RNA@data[all_markers,])
+cnts_sel = cnts_sel[,order(srt_sel$pseudotime,decreasing = F)]
+
+cnt_comb = cbind(cnts_sel1,cnts_sel)
+return_fitted = function(ix) {gam::gam(y~s(x),data=data.frame(y=ix,x=1:length(ix) ) )$fitted.values}
+cnts_sel_smooth = t(apply(cnt_comb,1,return_fitted) )
+
+cnts_sel_smooth = t(scale(t(cnts_sel_smooth)))
+cnts_sel_smooth[cnts_sel_smooth>4] = 4
+
+srt_sub$neural_trajectory = 0
+srt_sub$neural_trajectory[srt_sub$predicted.id %in% c(31,39) & !(srt_sub$seurat_clusters %in% c(2,4,8,13)) ] = srt_sub$pseudotime[srt_sub$predicted.id %in% c(31,39) & !(srt_sub$seurat_clusters %in% c(2,4,8,13)) ]
+srt_sub$neural_trajectory = (srt_sub$neural_trajectory-min(srt_sub$neural_trajectory))/(max(srt_sub$neural_trajectory)-min(srt_sub$neural_trajectory))
+
+srt_sub$somite_trajectory = 0
+srt_sub$somite_trajectory[srt_sub$predicted.id %in% c(30,18) & (srt_sub$seurat_clusters %in% c(7,2,4,8,13)) ] = srt_sub$pseudotime[srt_sub$predicted.id %in% c(30,18) & (srt_sub$seurat_clusters %in% c(7,2,4,8,13)) ]
+srt_sub$somite_trajectory = (srt_sub$somite_trajectory-min(srt_sub$somite_trajectory))/(max(srt_sub$somite_trajectory)-min(srt_sub$somite_trajectory))
+
+cell_annotation = srt_sub@meta.data[,c("predicted.id","neural_trajectory","somite_trajectory","seurat_clusters")]
+
+# ann_colors = list(
+#     neural_trajectory = c(NMP_color, neural_color),
+#     somite_trajectory = c(NMP_color, somite_color),
+#     seurat_clusters = mycolors
+# )
+
+# pt_neural = "aquamarine4"
+# pt_neural_1 ="aquamarine3" #intermediate
+# pt_NMP = "darkslateblue"
+# pt_som = "palevioletred4"
+# pt_som1="palevioletred2" #intermediate
+
+ann_colors = list(
+    neural_trajectory = c(pt_NMP,  pt_neural, pt_neural_1),
+    somite_trajectory = c(pt_NMP,pt_som,pt_som1),
+    seurat_clusters = mycolors
+)
+
+pheatmap::pheatmap(cnts_sel_smooth,scale="none",annotation_col = cell_annotation,gaps_col=ncol(cnts_sel1),annotation_colors = ann_colors,cluster_cols = F,show_colnames = F,filename = file.path(fig_dir,"heatmap_combined_pseudotime_allmarkers.pdf") ,width = 15,height = 25,fontsize_row = 5,clustering_distance_rows="correlation",na_col = "grey90")
+
+pheatmap::pheatmap(cnts_sel_smooth,scale="none",annotation_col = cell_annotation[,c("neural_trajectory","somite_trajectory"),drop=F],annotation_colors = ann_colors,gaps_col=ncol(cnts_sel1),cluster_cols = F,show_rownames = F,show_colnames = F,filename = file.path(fig_dir,"heatmap_combined_pseudotime_allmarkers_small.pdf") ,width = 6,height = 7,treeheight_row=0,clustering_distance_rows="correlation")
+
+
+selected_gene = c("Sox2","Tbx6","T","Nkx1-2","Ripply2","Tcf15","Nkx6-1","Cyp26a1","Hoxaas3","Cdx4","Lef1","Zic1","Sox9","Aldh1a2","Sox1","Pax3")
+
+pheatmap::pheatmap(cnts_sel_smooth[selected_gene,],scale="none",annotation_col = cell_annotation[,c("neural_trajectory","somite_trajectory"),drop=F],annotation_colors = ann_colors,gaps_col=ncol(cnts_sel1),cluster_cols = F,show_rownames = T,show_colnames = F,filename = file.path(fig_dir,"heatmap_combined_pseudotime_allmarkers_selected_gene.pdf") ,width = 5.5,height = 4,treeheight_row=0,clustering_distance_rows="correlation")
+```
+
+
+```{r}
+library(ggnewscale)
+plot_df = srt_sub@meta.data[,c("neural_trajectory","somite_trajectory")]
+plot_df$umap1 = srt_sub@reductions$umap@cell.embeddings[,1]
+plot_df$umap2 = srt_sub@reductions$umap@cell.embeddings[,2]
+plot_df_sub1 = plot_df[rownames(plot_df) %in% colnames(cnts_sel1),]
+plot_df_sub2 = plot_df[rownames(plot_df) %in% colnames(cnts_sel),]
+ggplot()+
+  geom_point(data=plot_df,aes(x=umap1,y=umap2),color="grey90",size=.4)+
+  geom_point(data=plot_df_sub2,aes(x=umap1,y=umap2,col=neural_trajectory),alpha=0.8,size=.5)+
+  scale_colour_gradient(low=NMP_color,high = neural_color)+
+  new_scale_color() +
+  geom_point(data=plot_df_sub1,aes(x=umap1,y=umap2,col=somite_trajectory),alpha=0.5,size=.5)+
+  scale_colour_gradient(low=NMP_color,high = somite_color)+
+  theme_void()
+ggsave(filename = file.path(fig_dir,"umap_early_trajectory.pdf"),width = 5,height = 4.5)
+```
+
+
+## line plot of key marker genes
+
+```{r}
+somite_mat = cnts_sel_smooth[,ncol(cnts_sel1):1]
+neural_mat = cnts_sel_smooth[,!(colnames(cnts_sel_smooth) %in% colnames(somite_mat))]
+
+selected_gene = c("Sox2","Tbx6","T","Nkx1-2","Ripply2","Tcf15","Nkx6-1","Aldh1a2","Pmaip1","Notch1","Zic1","Sox6")
+
+plot_list = list()
+for (sel_ge in selected_gene){
+  plot_df = data.frame(x=c((1:ncol(somite_mat))/ncol(somite_mat), (1:ncol(neural_mat))/ncol(neural_mat) ),
+                     y=c(somite_mat[sel_ge,], neural_mat[sel_ge,]), 
+                     trajectory=c(rep("Somite",ncol(somite_mat)),rep("Neural",ncol(neural_mat)) ) )
+plot_df$gene_name = sel_ge
+
+plot_list[[sel_ge]] = plot_df
+}
+
+plot_list = Reduce(rbind,plot_list)
+
+
+
+ggplot(data=plot_list,aes(x=x,y=y,col=trajectory))+
+  geom_line()+
+  scale_color_manual(values = c("Neural"=neural_color,
+                                "Somite"=somite_color))+
+  labs(x="Pseudotime",y="Scaled gene expression")+
+  theme_classic()+
+  theme(legend.position='top')+
+  facet_wrap(~gene_name)
+ggsave(file.path(fig_dir,"line_plot_markers.pdf"),width = 7,height = 6)
+
+
+```
+
+
+
+

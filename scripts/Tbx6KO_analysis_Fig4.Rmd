@@ -1,0 +1,764 @@
+---
+title: "Tbx6 mutation analysis"
+output: html_notebook
+---
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+
+
+```{r}
+library(Seurat)
+library(SeuratDisk)
+library(ggplot2)
+library(ggrepel)
+library(tidyr)
+library(dplyr)
+#library(scuttle)
+#library(scran)
+library(ggpubr)
+library(RColorBrewer)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+fig_dir = file.path("figs","Tbx6_fig")
+dir.create(fig_dir)
+
+```
+
+
+## load Tbx6 KO data and annotate cell type
+
+```{r}
+get_srt = function(matched_bead_locations,digital_expression,puck_id){
+    pos = read.csv(matched_bead_locations,sep="\t",header = F)
+    cnt = read.csv(digital_expression,sep="\t",row.names = 1,comment.char = "#")
+    pos = pos[,2:3]
+    rownames(pos) = colnames(cnt)
+    colnames(pos) = c("xcoord","ycoord")
+    srt = CreateSeuratObject(counts = cnt,meta.data = pos,min.features=200,project = puck_id)
+    srt
+  }
+srt_list = list()
+
+dir_p = "/home/rstudio/embryo_slide_seq_data/Puck_200703_25_WT_transverse_trunk/Puck_200703_25"
+srt_list[["200703_25"]] = get_srt(file.path(dir_p,"Puck_200703_25_matched_bead_locations.txt"),
+                                  file.path(dir_p,"Puck_200703_25.digital_expression.txt.gz"),
+                                  "200703_25")
+cropped = read.csv(file.path(dir_p,"Puck_200703_25_cropped_locations.csv"),sep=",")
+srt_list$`200703_25` = srt_list$`200703_25`[, colnames(srt_list$`200703_25`) %in% cropped$barcode]
+
+dir_p = "/home/rstudio/embryo_slide_seq_data/Puck_200808_21_TBX6KO_1/Puck_200808_21"
+srt_list[["200808_21"]] = get_srt(file.path(dir_p,"Puck_200808_21_matched_bead_locations.txt"),
+                                  file.path(dir_p,"Puck_200808_21.digital_expression.txt.gz"),
+                                  "200808_21") 
+cropped = read.csv(file.path(dir_p,"Puck_200808_21_cropped_locations.csv"),sep=",")
+srt_list$`200808_21` = srt_list$`200808_21`[, colnames(srt_list$`200808_21`) %in% cropped$barcode]
+
+#dir_p = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/slideseq/slideseq/mouse_embryo/Tbx6_mut/Puck_200808_22_TBX6KO_2"
+#srt_list[["200808_22"]] = get_srt(file.path(dir_p,"Puck_200808_22_matched_bead_locations.txt"),
+#                                  file.path(dir_p,"Puck_200808_22.digital_expression.txt.gz"),
+#                                  "200808_22") 
+
+
+srt = merge(srt_list[[1]],y=srt_list[-1],add.cell.ids=names(srt_list))
+emb = srt@meta.data[,c("xcoord","ycoord")]
+colnames(emb) = c("s_1","s_2")
+srt[["spatial"]] <- CreateDimReducObject(embeddings = as.matrix(emb), key = "s_")
+srt[["percent.mt"]] <- PercentageFeatureSet(srt, pattern = "^mt-")
+
+srt <- subset(srt, subset = percent.mt < 20)
+```
+
+
+
+```{r}
+firstup <- function(x) {
+  x <- tolower(x)
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+```
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+srt <- NormalizeData(srt)
+srt <- FindVariableFeatures(srt)
+srt <- ScaleData(srt)
+srt <- RunPCA(srt, features = VariableFeatures(srt))
+
+srt <- CellCycleScoring(srt, s.features =firstup( cc.genes$s.genes), g2m.features =firstup( cc.genes$g2m.genes), set.ident = F)
+srt <- FindNeighbors(srt , dims = 1:30, nn.eps = 0.1,verbose = F)
+srt <- FindClusters(srt,n.start = 10,verbose = F)
+srt <- RunUMAP(srt, dims = 1:30, min.dist = 0.1,verbose = F)
+```
+
+
+
+```{r}
+
+load("/home/rstudio/scRNAseq_reference_datasets/WT.Robj")
+WT = WT[,WT$stage %in% c("WT_85")]
+WT = WT[,WT$cluster %in% names(table(WT$cluster))[table(WT$cluster)>25]]
+WT = FindVariableFeatures(WT,nfeatures = 3000)
+WT = ScaleData(WT)
+WT = RunPCA(WT)
+anchors <- FindTransferAnchors(reference = WT, query = srt, npcs = 40,
+    dims = 1:40)
+predictions <- TransferData(anchorset = anchors, refdata = WT$cluster, 
+    dims = 1:40)
+
+
+srt <- AddMetaData(srt, metadata = predictions)
+```
+
+
+```{r}
+DimPlot(srt,reduction="spatial",group.by = "predicted.id")+coord_fixed(ratio = 1)
+ggsave(file.path(fig_dir,"all_annotations_unselected.pdf"))
+```
+
+
+```{r}
+dir.create(file.path(fig_dir,"all_anno_states"))
+for (x in unique(srt$predicted.id)) {
+  pp = DimPlot(srt,reduction="spatial",cells.highlight =colnames(srt)[srt$predicted.id == x])+ggtitle(x)+coord_fixed(ratio = 1)
+  ggsave(file.path(fig_dir,"all_anno_states",paste0(x,".pdf")),plot = pp)
+}
+
+```
+
+
+```{r}
+FeaturePlot(srt[,srt$predicted.id %in% c(18,39)],features = c("prediction.score.39","prediction.score.18"),reduction = "spatial")
+```
+
+```{r}
+selected_coor = srt@meta.data[srt$predicted.id %in% c("39","18") ,c("xcoord","ycoord","predicted.id","orig.ident")]
+
+ggplot(data=selected_coor,aes(x=xcoord,y=ycoord,col=predicted.id))+
+  geom_point()+
+  theme_classic()
+```
+
+```{r}
+library(dbscan)
+
+dbscan_out = dbscan(selected_coor[,1:2],eps=70,borderPoints=FALSE)
+
+ggplot(data=selected_coor,aes(x=xcoord,y=ycoord,col=as.factor(dbscan_out$cluster)))+
+  geom_point()+
+  labs(col="dbscan")+
+  theme_classic()
+
+
+```
+
+```{r}
+rotate <- function(df, degree) {
+  dfr <- df
+  d <- pi * degree / 180
+  c1 = mean(dfr$xcoord)
+  c2 = mean(dfr$ycoord)
+  dfr$xcoord = dfr$xcoord-c1
+  dfr$ycoord = dfr$ycoord-c2
+  rot_matrix = matrix(0,nrow = 2,ncol=2)
+  rot_matrix[1,1] = cos(d)
+  rot_matrix[1,2] = -sin(d)
+  rot_matrix[2,1] = sin(d)
+  rot_matrix[2,2] = cos(d)
+  dfr[,c("xcoord","ycoord")] = t(rot_matrix %*% t(dfr[,c("xcoord","ycoord")]))
+  dfr$xcoord = dfr$xcoord+c1
+  dfr$ycoord = dfr$ycoord+c2
+  return(dfr)
+}
+
+```
+
+
+```{r}
+selected_coor2 = selected_coor[dbscan_out$cluster %in% c(1,2),]
+
+selected_coor2[selected_coor2$orig.ident=="200703_25",] = rotate(selected_coor2[selected_coor2$orig.ident=="200703_25",],-30) 
+selected_coor2[selected_coor2$orig.ident=="200808_21",] = rotate(selected_coor2[selected_coor2$orig.ident=="200808_21",],-50) 
+plot(selected_coor2[,1:2])
+```
+
+
+```{r}
+srt1 = srt[,colnames(srt) %in% rownames(selected_coor2)]
+srt1@meta.data[rownames(selected_coor2),c("xcoord","ycoord")] = selected_coor2[,c("xcoord","ycoord")]
+tmp = as.matrix(srt1@meta.data[,c("xcoord","ycoord")])
+colnames(tmp) = c("s_1","s_2")
+srt1@reductions$spatial@cell.embeddings = tmp
+DimPlot(srt1,reduction = "spatial")
+```
+
+```{r}
+srt1$group = "KO"
+srt1$group[srt1$orig.ident=="200703_25"]="WT"
+srt1$group = factor(srt1$group,levels = c("WT","KO"))
+```
+
+# Perform de-novo clustering
+
+```{r}
+srt1 = FindVariableFeatures(srt1,nfeatures = 800,verbose = F)
+ignor_ge = grepl("^mt-",VariableFeatures(srt1)) | grepl("^Rps",VariableFeatures(srt1)) | grepl("^Rpl",VariableFeatures(srt1))
+VariableFeatures(srt1) = VariableFeatures(srt1)[!ignor_ge]
+srt1 = RunPCA(srt1,features = VariableFeatures(srt1),verbose = F)
+srt1 = FindNeighbors(srt1,k.param = 15,verbose = F,dims = 1:20)
+srt1 = FindClusters(srt1,resolution = 0.8,verbose = F,dims = 1:20)
+srt1 = RunUMAP(srt1,dims = 1:20,n.neighbors	=20,min.dist = 0.3,verbose = F)
+DimPlot(srt1,reduction = "spatial")
+```
+
+```{r}
+DimPlot(srt1,label=T,cols = c("0"="grey90",'1'="#8A2C7C",'2'="#88BBB4",'3'="#48B079",'4'="#A6B05A",'5'="#B09686"))+theme_void()
+ggsave(file.path(fig_dir,"umap_tbx6_clusters.pdf"),width = 3.2,height = 2.9)
+```
+
+```{r}
+DimPlot(srt1[,!(srt1$seurat_clusters==0)],label=T,cols = c('1'="#8A2C7C",'2'="#88BBB4",'3'="#48B079",'4'="#A6B05A",'5'="#B09686"))+coord_fixed()+theme_void()
+ggsave(file.path(fig_dir,"umap_tbx6_clusters_filtered.pdf"),width = 3.2,height = 2.9)
+
+DimPlot(srt1[,!(srt1$seurat_clusters==0)],group.by = "predicted.id",label=T,cols = c('18'="#8A2C7C",'39'="#48B079"))+labs(title=NULL)+coord_fixed()+theme_void()
+ggsave(file.path(fig_dir,"umap_tbx6_annotated_filtered.pdf"),width = 3.2,height = 2.9)
+```
+
+```{r}
+#DimPlot(srt1,reduction = "spatial",split.by = "group")
+plot_df = data.frame(x=srt1@reductions$spatial@cell.embeddings[,1],
+                     y=srt1@reductions$spatial@cell.embeddings[,2],
+                     col=srt1$seurat_clusters,
+                     fac=srt1$group)
+plot_df = plot_df[order(plot_df$col,decreasing = F),]
+ggplot(data=plot_df,aes(x=x,y=y ,col=col))+
+  geom_point()+
+  facet_wrap(~fac,scales="free")+
+  scale_color_manual(values = c("0"="grey90",'1'="#8A2C7C",'2'="#88BBB4",'3'="#48B079",'4'="#A6B05A",'5'="#B09686"))+
+  labs(col="cluster ID")+
+  theme_void()
+ggsave(file.path(fig_dir,"spatial_tbx6_kowt_seuratcluster.pdf"),width = 4.5,height = 2)
+```
+
+
+```{r,fig.width=9,fig.height=9}
+DimPlot(srt1,reduction = "spatial",split.by = "seurat_clusters",ncol=3)
+```
+
+```{r}
+VlnPlot(srt1,features = c("nCount_RNA","nFeature_RNA"),cols = c("0"="grey90",'1'="#8A2C7C",'2'="#88BBB4",'3'="#48B079",'4'="#A6B05A",'5'="#B09686"))
+ggsave(file.path(fig_dir,"tbx6_QC_vlnplot.pdf"),width = 4.5,height = 2)
+```
+
+## Find marker genes for each cluster
+
+```{r,fig.width=9,fig.height=12}
+srt.marker = FindAllMarkers(srt1,min.diff.pct=0.05,only.pos = T,verbose=F)
+top10 <- srt.marker %>% group_by(cluster) %>% top_n(n = 20, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+srt.marker_u = srt.marker[srt.marker$p_val_adj<0.01,] %>%  group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+DotPlot(srt1,features = unique(top10$gene),cluster.idents=F,cols=c("white","Red"))+coord_flip()
+ggsave(file.path(fig_dir,"marker_genes_dotplot.pdf"),width = 5,height = 8)
+```
+
+
+```{r}
+top10 <- srt.marker %>% group_by(cluster) %>% top_n(n = 20, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+write.csv(top10,file="data/Tbx6_cluster_markers.csv",row.names = FALSE)
+```
+
+## DE between cluster 1vs3 and 2vs3
+
+```{r}
+srt.marker13 = FindMarkers(srt1,ident.1 = c(1),ident.2 = 3,logfc.threshold = 0.0,min.cells.group=1,min.pct = 0,verbose=F)
+srt.marker23 = FindMarkers(srt1,ident.1 = c(2),ident.2 = 3,logfc.threshold = 0.0,min.cells.group=1,min.pct = 0,verbose=F)
+
+comm_ge = intersect(rownames(srt.marker13),rownames(srt.marker23))
+srt.marker13 = srt.marker13[comm_ge,]
+srt.marker23 = srt.marker23[comm_ge,]
+srt.marker13$gene = rownames(srt.marker13)
+srt.marker23$gene = rownames(srt.marker23)
+srt.marker_c = srt.marker13 %>% left_join(srt.marker23,by=c("gene"="gene"))
+
+```
+
+```{r}
+srt.marker_c[srt.marker_c$avg_log2FC.x>0.6 & srt.marker_c$avg_log2FC.y>0.6,]
+
+srt.marker_c[srt.marker_c$avg_log2FC.x<(-0.7) & srt.marker_c$avg_log2FC.y<(-0.7),]
+
+srt.marker_c[order(srt.marker_c$avg_log2FC.x,decreasing = F)[1:20],]
+
+srt.marker_c[order(srt.marker_c$avg_log2FC.y,decreasing = T)[1:10],]
+```
+
+```{r}
+sel_ge1 = c("Zic1","Meox1","Arg1","Igf2","H19","Aldh1a2","Mest","Pax3","Nkx6-1","Sox3","Gm38103","Olig2","Sox2","Crabp2","Sfrp2","Irx3","Ptch1","Gli3","Gas1")
+srt.marker_c$sel_ge = srt.marker_c$gene
+srt.marker_c$sel_ge[!(srt.marker_c$sel_ge %in% sel_ge1)]=""
+srt.marker_c$sel_tf = TRUE
+srt.marker_c$sel_tf[srt.marker_c$sel_ge==""]=FALSE
+srt.marker_c = srt.marker_c[order(srt.marker_c$sel_tf),]
+```
+
+```{r}
+srt.marker_c_rename = srt.marker_c
+colnames(srt.marker_c_rename) = gsub(".x",".1vs3",colnames(srt.marker_c_rename))
+
+colnames(srt.marker_c_rename) = gsub(".x",".2vs3",colnames(srt.marker_c_rename))
+
+write.csv(srt.marker_c_rename,file = "data/DEtable_1vs3_2vs3.csv",row.names = F)
+```
+
+
+```{r}
+ggplot(data=srt.marker_c,aes(x=avg_log2FC.x,y=avg_log2FC.y,label=sel_ge))+
+  geom_vline(aes(xintercept = 0),alpha=0.3)+
+  geom_hline(aes(yintercept = 0),alpha=0.3)+
+  geom_point(aes(col=sel_tf),alpha=0.9)+
+  scale_color_manual(values = c("grey80","black"))+
+  geom_text_repel(max.overlaps=1000)+
+  guides(col="none")+
+  labs(x="logFC between cluster c1 and c3",y="logFC between c2 and c3")+
+  theme_classic()
+ggsave(file.path(fig_dir,"logfc_scatter_cluster123.pdf"),width = 3.8,height = 3.5)
+```
+
+
+```{r}
+DotPlot(srt1,idents=c(1,2,3),features = c(sel_ge1,"Shh","Pax6","Foxa2","Prdm8","Pbxip1"),cols=c("white","#C8385D"))+coord_flip()+theme(axis.title = element_blank())
+ggsave(file.path(fig_dir,"dotplot_selected_marker_cluster123.pdf"), width = 4,height = 5)
+```
+
+
+
+```{r}
+connectedBarplot <- function(dat, color=rainbow(nrow(dat)), space=0.5, alpha=0.5, ...) {  
+    b <- barplot(dat, col=color, space = space, ...)                     
+
+    for (i in seq_len(ncol(dat) - 1)) {     
+        lines(c(b[i]+0.5, b[i+1]-0.5), c(0, 0)) ## bottom line       
+                  
+        for (j in seq_len(nrow(dat))) {     
+            if (j == 1) {                   
+                lines(c(b[i]+0.5, b[i+1]-0.5), c(dat[j,i], dat[j,i+1]))                       
+                polygon(c(b[i]+0.5, b[i]+0.5, b[i+1]-0.5, b[i+1]-0.5),                        
+                        c(0, dat[j,i], dat[j,i+1], 0),               
+                        col=adjustcolor(color[j], alpha.f=alpha))    
+            }      
+            if (j == 2) {                   
+                lines(c(b[i]+0.5, b[i+1]-0.5), c(colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1]))                      
+                polygon(c(b[i]+0.5, b[i]+0.5, b[i+1]-0.5, b[i+1]-0.5),                        
+                        c(dat[1,i], colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1], dat[1,i+1]),                       
+                        col=adjustcolor(color[j], alpha.f=alpha))    
+            }      
+            if (j > 2) {                    
+                lines(c(b[i]+0.5, b[i+1]-0.5), c(colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1]))                      
+                polygon(c(b[i]+0.5, b[i]+0.5, b[i+1]-0.5, b[i+1]-0.5),                        
+                        c(colSums(dat[1:(j-1),])[i], colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1], colSums(dat[1:(j-1),])[i+1]),              
+                        col=adjustcolor(color[j], alpha.f=alpha))    
+            }      
+        }          
+    }              
+}      
+```
+
+
+
+
+```{r}
+tmp = as.matrix(table(as.character(srt1$seurat_clusters),srt1$group))
+tmp = t(t(tmp)/colSums(tmp))
+
+connectedBarplot(t(tmp),col=c("grey50","black"))
+```
+
+
+```{r}
+spa_coord = as.data.frame(srt1@reductions$spatial@cell.embeddings[srt1$group=="KO" & srt1$seurat_clusters %in% c(0,1,2,3),])
+spa_coord$cluster=srt1$seurat_clusters[srt1$group=="KO" & srt1$seurat_clusters %in% c(0,1,2,3)]
+sel_c=2
+kde_res2 = MASS::kde2d(spa_coord[spa_coord$cluster==sel_c,1],spa_coord[spa_coord$cluster==sel_c,2],n=50,lims = c(range(spa_coord$s_1),range(spa_coord$s_2)))
+sel_c=3
+kde_res3 = MASS::kde2d(spa_coord[spa_coord$cluster==sel_c,1],spa_coord[spa_coord$cluster==sel_c,2],n=50,lims = c(range(spa_coord$s_1),range(spa_coord$s_2)))
+
+
+kde_res_c = matrix(0,nrow=nrow(kde_res2$z),ncol=ncol(kde_res2$z))
+
+#kde_res_c[kde_res1$z>kde_res2$z &  kde_res1$z>kde_res3$z] = 1
+
+kde_res_c[  kde_res2$z>kde_res3$z] = 2
+
+kde_res_c[kde_res3$z>kde_res2$z] = 3
+kde_res_c[kde_res3$z<5e-6 & kde_res2$z<5e-6 ] = 0
+pdf(file.path(fig_dir,"raster_tbx6_ko_seuratcluster.pdf"),width = 4.5,height = 5)
+image(kde_res_c,col=c("white","#8A2C7C","#88BBB4","#48B079"),axes = FALSE) 
+dev.off()
+```
+
+
+```{r}
+spa_coord = as.data.frame(srt1@reductions$spatial@cell.embeddings[srt1$group=="WT",])
+spa_coord$cluster=srt1$seurat_clusters[srt1$group=="WT"]
+sel_c=1
+kde_res2 = MASS::kde2d(spa_coord[spa_coord$cluster==sel_c,1],spa_coord[spa_coord$cluster==sel_c,2],n=50,lims = c(range(spa_coord$s_1),range(spa_coord$s_2)))
+sel_c=3
+kde_res3 = MASS::kde2d(spa_coord[spa_coord$cluster==sel_c,1],spa_coord[spa_coord$cluster==sel_c,2],n=50,lims = c(range(spa_coord$s_1),range(spa_coord$s_2)))
+
+
+kde_res_c = matrix(0,nrow=nrow(kde_res2$z),ncol=ncol(kde_res2$z))
+
+#kde_res_c[kde_res1$z>kde_res2$z &  kde_res1$z>kde_res3$z] = 1
+
+kde_res_c[  kde_res2$z>kde_res3$z] = 1
+
+kde_res_c[kde_res3$z>kde_res2$z] = 3
+kde_res_c[kde_res3$z<5e-6 & kde_res2$z<5e-6 ] = 0
+pdf(file.path(fig_dir,"raster_tbx6_wt_seuratcluster.pdf"),width = 4.5,height = 5)
+image(kde_res_c,col=c("white","#8A2C7C","#88BBB4","#48B079"),axes = FALSE) 
+dev.off()
+```
+
+```{r,fig.width=14,fig.height=11}
+sel_shh_ge = c("Shh","Ptch1","Smo","Gil1","Gli2","Gli3","Boc","Foxa2","Gas1","Cdo","Hhip1","Pax6")
+sel_shh_ge = sel_shh_ge[sel_shh_ge %in% rownames(srt1)]
+FeaturePlot(srt1,features = sel_shh_ge,reduction = "spatial",order=T,pt.size = 0.5,ncol=3)
+ggsave(file.path(fig_dir,"ssh_signal_spatial_Left_KO.pdf"))
+```
+
+
+```{r}
+srt_wt = srt1[,srt1$orig.ident=="200703_25"]
+srt_ko = srt1[,srt1$orig.ident=="200808_21"]
+
+get_neighbor = function(srt){
+  srt = FindVariableFeatures(srt,nfeatures = 500)
+  srt = RunPCA(srt)
+  srt = FindNeighbors(srt,k.param = 20,prune.SNN=1/15,dims = 1:10)
+}
+srt_wt = get_neighbor(srt_wt)
+srt_ko = get_neighbor(srt_ko)
+```
+
+
+```{r}
+get_imputed_ge = function(srt,sel_genes){
+  dist_nn = FindNeighbors(dist(srt@meta.data[,c("xcoord","ycoord")]),k.param = 20,prune.SNN=1/15)
+  tmp = as.matrix(srt@graphs$RNA_snn)
+  tmp[tmp==0] = min(tmp[tmp!=0])
+  comb_mat = tmp*as.matrix(dist_nn$snn)
+  gene_expr = as.matrix(srt@assays$RNA@data[sel_genes,])
+  gene_expr1 = gene_expr %*% comb_mat
+  gene_expr1 = t(t(gene_expr1)/colSums(comb_mat))
+}
+
+sel_genes = c("Shh","Foxa2","Pax3","Pax6")
+
+imputed_wt = get_imputed_ge(srt_wt,sel_genes)
+imputed_ko = get_imputed_ge(srt_ko,sel_genes)
+
+
+pdf(file.path(fig_dir,"markers_select_regions.pdf"),width = 7.5,height = 3)
+for (sel_ge in sel_genes){
+  plot_df = data.frame(x=srt_wt$xcoord,y=srt_wt$ycoord,ge_expr=imputed_wt[sel_ge,])
+  plot_df$ge_expr = scale(plot_df$ge_expr)
+  plot_df$ge_expr[plot_df$ge_expr>3] = 3
+  plot_df = plot_df[order(plot_df$ge_expr),]
+  p1 = ggplot(data=plot_df,aes(x=x,y=y,col=ge_expr))+
+    geom_point()+
+    labs(col=sel_ge,title="WT")+
+    theme_classic()
+  
+  plot_df = data.frame(x=srt_ko$xcoord,y=srt_ko$ycoord,ge_expr=imputed_ko[sel_ge,])
+  plot_df$ge_expr = scale(plot_df$ge_expr)
+  plot_df$ge_expr[plot_df$ge_expr>3] = 3
+  plot_df = plot_df[order(plot_df$ge_expr),]
+  p2 = ggplot(data=plot_df,aes(x=x,y=y,col=ge_expr))+
+    geom_point()+
+    labs(col=sel_ge,title="KO")+
+    theme_classic()
+  print(p1+p2)
+}
+dev.off()
+
+
+
+pdf(file.path(fig_dir,"markers_select_regions_raw.pdf"),width = 7.5,height = 3)
+for (sel_ge in sel_genes){
+  plot_df = data.frame(x=srt_wt$xcoord,y=srt_wt$ycoord,ge_expr=srt_wt@assays$RNA@data[sel_ge,])
+  plot_df$ge_expr = scale(plot_df$ge_expr)
+  plot_df$ge_expr[plot_df$ge_expr>3] = 3
+  plot_df = plot_df[order(plot_df$ge_expr),]
+  p1 = ggplot(data=plot_df,aes(x=x,y=y,col=ge_expr))+
+    geom_point()+
+    labs(col=sel_ge,title="WT")+
+    theme_classic()
+  
+  plot_df = data.frame(x=srt_ko$xcoord,y=srt_ko$ycoord,ge_expr=srt_ko@assays$RNA@data[sel_ge,])
+  plot_df$ge_expr = scale(plot_df$ge_expr)
+  plot_df$ge_expr[plot_df$ge_expr>3] = 3
+  plot_df = plot_df[order(plot_df$ge_expr),]
+  p2 = ggplot(data=plot_df,aes(x=x,y=y,col=ge_expr))+
+    geom_point()+
+    labs(col=sel_ge,title="KO")+
+    theme_classic()
+  print(p1+p2)
+}
+dev.off()
+
+```
+
+```{r,fig.width=14,fig.height=11}
+sel_shh_ge = c("Pax3","Foxa2","Gas1","Cdo","Hhip1","Pax6")
+sel_shh_ge = sel_shh_ge[sel_shh_ge %in% rownames(srt1)]
+FeaturePlot(srt1,features = sel_shh_ge,reduction = "spatial",order=T,pt.size = 0.5,ncol=3)
+ggsave(file.path(fig_dir,"ssh_signal_spatial_Left_KO.pdf"))
+```
+
+Prdm8
+Sema5b
+Emid1
+Hs3st3b1
+Boc
+Fgfbp3
+Irx5
+
+"Prdm8","Sema5b","Emid1","Hs3st3b1","Fgfbp3","Boc","Irx5","Foxa2",
+
+```{r,fig.width=8,fig.height=6}
+sel_DV_ge = c("Nkx2-9","Pbxip1","Pax6","Prdm8")
+sel_DV_ge = sel_DV_ge[sel_DV_ge %in% rownames(srt1)]
+FeaturePlot(srt1,features = sel_DV_ge,cols = BlueAndRed()[20:50] , reduction = "spatial",order=T,pt.size = 0.4,max.cutoff = "q98",ncol=2,coord.fixed = T)
+ggsave(file.path(fig_dir,"selected_marker_spatial1.pdf"))
+```
+
+```{r,fig.width=11,fig.height=9}
+
+VlnPlot(srt1,features = sel_DV_ge,pt.size = 0.1,ncol=2)
+```
+
+
+```{r,fig.width=14,fig.height=11}
+sel_shh_ge = c("Shh","Ptch1","Smo","Gil1","Gli2","Gli3","Boc","Gpr161","Gas1","Cdo","Hhip1")
+sel_shh_ge = sel_shh_ge[sel_shh_ge %in% rownames(srt1)]
+VlnPlot(srt1,features = sel_shh_ge,pt.size = 0,ncol=2)
+#ggsave(file.path(fig_dir,"ssh_signal_spatial_Left_KO.pdf"))
+```
+
+```{r}
+
+
+shh_pos_ko = (srt1@assays$RNA@data["Shh",srt1$group=="KO"] %*% srt1@reductions$spatial@cell.embeddings[srt1$group=="KO",])/sum(srt1@assays$RNA@data["Shh",srt1$group=="KO"])
+shh_pos_wt = (srt1@assays$RNA@data["Shh",srt1$group=="WT"] %*% srt1@reductions$spatial@cell.embeddings[srt1$group=="WT",])/sum(srt1@assays$RNA@data["Shh",srt1$group=="WT"])
+```
+
+
+```{r}
+ko_dist = t(t(srt1@reductions$spatial@cell.embeddings[srt1$group=="KO",])-c(shh_pos_ko))
+ko_dist = sqrt(rowSums(ko_dist^2))
+
+sel_expr = as.data.frame(t(as.matrix(srt1@assays$RNA@data[c(sel_shh_ge[-1]),srt1$group=="KO"])))
+
+sel_expr$dist2Shh=ko_dist[rownames(sel_expr)]
+```
+
+
+
+```{r}
+wt_dist = t(t(srt1@reductions$spatial@cell.embeddings[srt1$group=="WT",])-c(shh_pos_wt))
+wt_dist = sqrt(rowSums(wt_dist^2))
+
+sel_expr_wt = as.data.frame(t(as.matrix(srt1@assays$RNA@data[c(sel_shh_ge[-1]),srt1$group=="WT"])))
+
+sel_expr_wt$dist2Shh=wt_dist[rownames(sel_expr_wt)]
+```
+
+```{r}
+sel_ge = "Gli3"
+
+plot_df = sel_expr[,c(sel_ge,"dist2Shh")]
+plot_df = plot_df[plot_df[,1]>0,]
+
+plot(plot_df[,c(2,1)])
+
+plot_df = sel_expr_wt[,c(sel_ge,"dist2Shh")]
+plot_df = plot_df[plot_df[,1]>0,]
+
+plot(plot_df[,c(2,1)])
+```
+
+spatial gene plot
+
+```{r}
+plot_genes = read.csv(text = "Shh
+Foxa2
+Pax6
+Olig2
+Gm38103
+Nkx6-1
+Nkx2-9
+Ptch1
+Gli3
+Aldh1a2
+Pbxip1
+Sox3
+Dbx2
+Pax7
+Prdm8",header=F)
+plot_genes = plot_genes$V1
+
+plot_df = data.frame(x=srt1$xcoord,y=srt1$ycoord,group=srt1$group)
+tmp_expr = srt1@assays$RNA@data[plot_genes,]
+tmp_expr = scale(t(as.matrix(tmp_expr)))
+colnames(tmp_expr) = gsub("-",".",colnames(tmp_expr) )  
+plot_genes1 = colnames(tmp_expr)
+tmp_expr[tmp_expr>5] = 5
+plot_df = cbind(plot_df, tmp_expr)
+```
+
+```{r}
+theme_update(plot.title = element_text(hjust = 0.5))
+pp_list = list()
+
+for (sel_ge in plot_genes1) {
+  plot_df = plot_df[order(plot_df[,sel_ge]),]
+  pp = ggplot(data=plot_df,aes_string(x="x",y="y",col=sel_ge))+
+  geom_point(size=1)+
+    labs(col="Scaled expression")+
+    ggtitle(sel_ge)+
+  scale_color_gradientn(colours=BlueAndRed()[20:50])+
+  facet_wrap(~group,scale="free")+
+  theme_void()+theme(aspect.ratio = 0.5)
+  pp_list[[sel_ge]] = pp
+}
+
+pp = ggarrange(plotlist = pp_list,common.legend = T)
+ggsave(filename = file.path(fig_dir,"Tbx6_markers_SpatialExpr.pdf") ,width = 14,height = 12,plot = pp)
+
+```
+
+
+## data projection onto the trank dataset generated in Fig2
+
+```{r}
+srt_trunk = readRDS("data/trunk_integrated_srt.Rds")
+```
+
+
+```{r,fig.width=9,fig.height=9}
+FeaturePlot(srt_trunk,features = sel_ge1,order=T)
+```
+
+
+```{r}
+srt_trunk_95 = srt_trunk[,srt_trunk$stage=="E9.5" ]
+srt_trunk_95$old_seurat_clusters = srt_trunk_95$seurat_clusters
+srt_trunk_95 = FindVariableFeatures(srt_trunk_95,nfeatures = 2000,verbose = F)
+srt_trunk_95 = RunPCA(srt_trunk_95,verbose = F)
+srt_trunk_95 = FindNeighbors(srt_trunk_95,dims = 1:30,verbose = F)
+srt_trunk_95 = FindClusters(srt_trunk_95,resolution = 1.2,verbose = F)
+srt_trunk_95 = RunUMAP(srt_trunk_95,dims = 1:30,min.dist = 0.1,reduction.name = "umap95")
+```
+
+
+```{r}
+DimPlot(srt_trunk_95,reduction = "umap95")
+```
+
+
+```{r,fig.width=9,fig.height=9}
+FeaturePlot(srt_trunk_95,reduction = "umap95",features = sel_ge1,order=T)
+```
+
+
+```{r,fig.width=16,fig.height=12}
+FeaturePlot(srt_trunk_95,reduction = "spatial",features = c("Prdm8","Hs3st3b1","Fgfbp3","Boc","Irx5"),order=T,split.by = "orig.ident",ncol=3,pt.size=0.1)
+```
+
+```{r,fig.width=16,fig.height=12}
+FeaturePlot(srt_trunk_95,reduction = "spatial",features = c("Shh","Aldh1a2","Meox1","Gm38103","Nkx2-9"),order=T,split.by = "orig.ident",ncol=3,pt.size=0.1)
+```
+
+```{r,fig.width=9,fig.height=9}
+FeaturePlot(srt_trunk_95,reduction = "umap95",features = sel_shh_ge,order=T)
+```
+
+
+```{r}
+VlnPlot(WT,c("Pax3","Aldh1a2"),ncol=1 )
+```
+
+```{r}
+srt1$ko_seurat_clusters = srt1$seurat_clusters
+features <- SelectIntegrationFeatures(object.list = list(srt_trunk_95,srt1))
+immune.anchors <- FindIntegrationAnchors(object.list = list(srt_trunk_95,srt1), anchor.features = features,k.score = 20,k.filter = 100,k.anchor=3)
+# this command creates an 'integrated' data assay
+srt_comb1 <- IntegrateData(anchorset = immune.anchors)
+
+srt_comb1 <- ScaleData(srt_comb1, verbose = FALSE)
+srt_comb1 <- RunPCA(srt_comb1, npcs = 30, verbose = FALSE)
+srt_comb1 <- FindNeighbors(srt_comb1, reduction = "pca", dims = 1:30)
+```
+
+```{r}
+srt_comb_raw = merge(srt_trunk_95,srt1)
+srt_comb_raw$batch = "r"
+srt_comb_raw$batch[!is.na(srt_comb_raw$group)] = "q"
+srt_comb_raw <- RunFastMNN(object.list = SplitObject(srt_comb_raw,split.by = "batch") )
+
+```
+
+
+
+```{r}
+pca_out = srt_comb_raw@reductions$mnn@cell.embeddings
+
+pca_dist = dist(pca_out)
+pca_dist = as.matrix(pca_dist)
+
+get_avg_umap = function(ix){
+  tmp = pca_dist[ix,!(srt_comb1$orig.ident %in% c("200808_21","200703_25"))]
+  tmp = tmp[order(tmp)]
+  top_meta = srt_trunk@reductions$umap@cell.embeddings[names(tmp)[1:10],]
+  c(mean(top_meta[,1]),mean(top_meta[,2]), var(top_meta[,1]),var(top_meta[,2]) )
+}
+
+ko_ind = (1:ncol(srt_comb1))[srt_comb1$orig.ident %in% c("200808_21","200703_25")]
+
+avg_umap = Reduce(rbind,lapply(ko_ind,get_avg_umap ))
+
+rownames(avg_umap) = colnames(srt_comb1)[ko_ind]
+colnames(avg_umap) = c("umap1","umap2","var1","var2")
+```
+
+
+
+
+```{r}
+plot_df = as.data.frame(avg_umap)
+plot_df$map_unc = sqrt(plot_df$var1+plot_df$var2)
+#plot_df$map_unc = scale(plot_df$map_unc)
+plot_df$cluster_id = srt1$ko_seurat_clusters[match(rownames(plot_df),colnames(srt1))]
+plot_df$group = srt1$group[match(rownames(plot_df),colnames(srt1))]
+plot_df = plot_df[plot_df$cluster_id %in% c(1,2,3),]
+plot_df = plot_df[!(plot_df$group=="WT" & plot_df$var2>5),]
+
+plot_all_df = data.frame(x=srt_trunk@reductions$umap@cell.embeddings[,1],y=srt_trunk@reductions$umap@cell.embeddings[,2])
+ggplot()+
+  geom_point(data=plot_all_df,aes(x=x,y=y),size=0.1,color="grey90")+
+  geom_point(data=plot_df,aes(x=umap1,y=umap2,col=cluster_id,size=var2))+
+  scale_color_manual(values = c('1'="#8A2C7C",'2'="#88BBB4",'3'="#48B079"))+
+  labs(size="mapping uncertainty",col="cluster id")+
+  scale_size(range=c(0.3,5))+
+  theme_void()+
+  facet_wrap(~group)
+ggsave(filename = file.path(fig_dir,"umap_project_WTKO.pdf"),width = 6,height = 2.8)
+
+```
+
+
